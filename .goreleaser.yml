@@ -53,17 +53,17 @@ checksum:
   algorithm: sha256
 
 signs:
-  - artifacts: checksum
+  - cmd: ssh-keygen
+    artifacts: checksum
     args:
-      # Use local GPG key for signing
-      # Configure GPG_FINGERPRINT in GitHub secrets for CI
-      - "--batch"
-      - "--local-user"
-      - "{{ .Env.GPG_FINGERPRINT }}"
-      - "--output"
-      - "${signature}"
-      - "--detach-sign"
+      - "-Y"
+      - "sign"
+      - "-f"
+      - "{{ .Env.SSH_SIGNING_KEY_FILE }}"
+      - "-n"
+      - "file"
       - "${artifact}"
+    signature: "${artifact}.sig"
 
 release:
   draft: false
@@ -97,7 +97,7 @@ release:
     
     ## Checksums
     
-    All release artifacts are checksummed and GPG-signed for verification.
+    All release artifacts are checksummed and SSH-signed for verification.
 
 changelog:
   use: github
