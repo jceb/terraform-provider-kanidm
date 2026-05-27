@@ -1,12 +1,21 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
+	"os"
+	"path/filepath"
 )
 
 // OAuth2Client represents a Kanidm OAuth2 resource server
 type OAuth2Client struct {
+	UUID         string
 	Name         string
 	DisplayName  string
 	Origin       string
@@ -15,6 +24,64 @@ type OAuth2Client struct {
 	ClientID     string // Computed
 	ClientSecret string // Only for basic/confidential clients, populated on creation
 	IsPublic     bool
+}
+
+// ListOAuth2Clients lists all OAuth2 clients visible to the caller.
+func (c *Client) ListOAuth2Clients(ctx context.Context) ([]OAuth2Client, error) {
+	resp, err := c.doRequest(ctx, "GET", "/v1/oauth2", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list oauth2 clients: %w", err)
+	}
+
+	var entries []Entry
+	if err := decodeResponse(resp, &entries); err != nil {
+		return nil, err
+	}
+
+	clients := make([]OAuth2Client, 0, len(entries))
+	for _, entry := range entries {
+		_, hasBasicSecret := entry.Attrs["oauth2_rs_basic_secret"]
+		isPublic := !hasBasicSecret
+
+		clientName := entry.GetString("name")
+		if clientName == "" {
+			clientName = entry.GetString("oauth2_rs_name")
+		}
+
+		origin := entry.GetString("oauth2_rs_origin")
+		if len(origin) > 0 && origin[len(origin)-1] == '/' {
+			origin = origin[:len(origin)-1]
+		}
+
+		clients = append(clients, OAuth2Client{
+			UUID:         firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
+			Name:         clientName,
+			DisplayName:  entry.GetString("displayname"),
+			Origin:       origin,
+			RedirectURIs: entry.GetStringSlice("oauth2_rs_origin_landing"),
+			ClientID:     clientName,
+			IsPublic:     isPublic,
+		})
+	}
+
+	return clients, nil
+}
+
+// ResolveOAuth2Client resolves an OAuth2 client by current name or stable UUID.
+func (c *Client) ResolveOAuth2Client(ctx context.Context, identifier string) (*OAuth2Client, error) {
+	clients, err := c.ListOAuth2Clients(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, oauth2Client := range clients {
+		if oauth2Client.UUID == identifier || oauth2Client.Name == identifier {
+			clientCopy := oauth2Client
+			return &clientCopy, nil
+		}
+	}
+
+	return nil, ErrNotFound
 }
 
 // CreateOAuth2BasicClient creates a new OAuth2 basic (confidential) client
@@ -102,6 +169,7 @@ func (c *Client) GetOAuth2Client(ctx context.Context, name string) (*OAuth2Clien
 	}
 
 	return &OAuth2Client{
+		UUID:         firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
 		Name:         clientName,
 		DisplayName:  entry.GetString("displayname"),
 		Origin:       origin,
@@ -112,9 +180,13 @@ func (c *Client) GetOAuth2Client(ctx context.Context, name string) (*OAuth2Clien
 	}, nil
 }
 
-// UpdateOAuth2Client updates an OAuth2 client
-func (c *Client) UpdateOAuth2Client(ctx context.Context, name string, displayName, origin string, redirectURIs []string) error {
+// UpdateOAuth2Client updates an OAuth2 client. If newName is non-nil, the client is renamed.
+func (c *Client) UpdateOAuth2Client(ctx context.Context, name string, newName *string, displayName, origin string, redirectURIs []string) error {
 	attrs := make(map[string]any)
+
+	if newName != nil {
+		attrs["name"] = []string{*newName}
+	}
 
 	if displayName != "" {
 		attrs["displayname"] = []string{displayName}
@@ -204,4 +276,64 @@ func (c *Client) RegenerateOAuth2BasicSecret(ctx context.Context, name string) (
 	}
 
 	return secret, nil
+}
+
+// UploadOAuth2Image uploads or replaces an OAuth2 client image.
+func (c *Client) UploadOAuth2Image(ctx context.Context, name, imagePath string) error {
+	fileContents, err := os.ReadFile(imagePath)
+	if err != nil {
+		return fmt.Errorf("read oauth2 image: %w", err)
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(imagePath))
+	if contentType == "" {
+		return fmt.Errorf("determine oauth2 image content type for %q", imagePath)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filepath.Base(imagePath)))
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return fmt.Errorf("create oauth2 image multipart part: %w", err)
+	}
+	if _, err := io.Copy(part, bytes.NewReader(fileContents)); err != nil {
+		return fmt.Errorf("write oauth2 image multipart body: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close oauth2 image multipart writer: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+fmt.Sprintf("/v1/oauth2/%s/_image", name), &body)
+	if err != nil {
+		return fmt.Errorf("create oauth2 image request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("execute oauth2 image request: %w", err)
+	}
+
+	if err := c.checkResponse(resp); err != nil {
+		return fmt.Errorf("upload oauth2 image: %w", err)
+	}
+
+	_ = resp.Body.Close()
+	return nil
+}
+
+// DeleteOAuth2Image removes the image associated with an OAuth2 client.
+func (c *Client) DeleteOAuth2Image(ctx context.Context, name string) error {
+	resp, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/v1/oauth2/%s/_image", name), nil)
+	if err != nil {
+		return fmt.Errorf("delete oauth2 image: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
 }

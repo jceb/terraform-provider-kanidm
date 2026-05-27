@@ -28,6 +28,7 @@ type serviceAccountResource struct {
 }
 
 type serviceAccountResourceModel struct {
+	Name           types.String `tfsdk:"name"`
 	ID             types.String `tfsdk:"id"`
 	DisplayName    types.String `tfsdk:"displayname"`
 	APIToken       types.String `tfsdk:"api_token"`
@@ -49,7 +50,7 @@ An API token is automatically generated on creation and can be used for authenti
 
 ` + "```hcl" + `
 resource "kanidm_service_account" "terraform" {
-  id          = "terraform-automation"
+  name        = "terraform-automation"
   displayname = "Terraform Automation Account"
 }
 
@@ -64,11 +65,15 @@ output "terraform_token" {
 Store it securely immediately after creation.`,
 
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				MarkdownDescription: "Unique identifier for the service account. Cannot be changed after creation.",
+			"name": schema.StringAttribute{
+				MarkdownDescription: "Service account name. This can be changed outside Terraform, but is tracked via the stable UUID in `id`.",
 				Required:            true,
+			},
+			"id": schema.StringAttribute{
+				MarkdownDescription: "Stable Kanidm UUID for this service account. This value is computed after creation/import and used to keep the resource linked across external renames.",
+				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"displayname": schema.StringAttribute{
@@ -80,6 +85,9 @@ Store it securely immediately after creation.`,
 					"Store this token securely as it cannot be retrieved later.",
 				Computed:  true,
 				Sensitive: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"entry_managed_by": schema.SetAttribute{
 				MarkdownDescription: "Set of account or group IDs that can manage this service account. " +
@@ -93,20 +101,34 @@ Store it securely immediately after creation.`,
 }
 
 func (r *serviceAccountResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	data := configureResource(req, resp)
+	if data == nil {
 		return
 	}
 
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			"Expected *client.Client. Please report this issue to the provider developers.",
-		)
-		return
+	r.client = data.client
+}
+
+func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, model *serviceAccountResourceModel, sa *client.ServiceAccount) error {
+	if sa.UUID == "" {
+		return errors.New("Kanidm did not return a UUID for the requested service account")
 	}
 
-	r.client = c
+	model.ID = types.StringValue(sa.UUID)
+	model.Name = types.StringValue(sa.Name)
+	model.DisplayName = types.StringValue(sa.DisplayName)
+
+	if len(sa.EntryManagedBy) > 0 {
+		embySet, diags := types.SetValueFrom(ctx, types.StringType, sa.EntryManagedBy)
+		if diags.HasError() {
+			return errors.New(diags.Errors()[0].Summary())
+		}
+		model.EntryManagedBy = embySet
+	} else {
+		model.EntryManagedBy = types.SetNull(types.StringType)
+	}
+
+	return nil
 }
 
 func (r *serviceAccountResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -117,7 +139,7 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 	}
 
 	tflog.Debug(ctx, "Creating service account", map[string]any{
-		"id":          plan.ID.ValueString(),
+		"name":        plan.Name.ValueString(),
 		"displayname": plan.DisplayName.ValueString(),
 	})
 
@@ -129,7 +151,7 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 	}
 
 	// Create the service account (this also generates an initial API token)
-	sa, err := r.client.CreateServiceAccount(ctx, plan.ID.ValueString(), plan.DisplayName.ValueString(), entryManagedBy)
+	sa, err := r.client.CreateServiceAccount(ctx, plan.Name.ValueString(), plan.DisplayName.ValueString(), entryManagedBy)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Service Account",
@@ -138,21 +160,23 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	// Map response to state
-	plan.ID = types.StringValue(sa.ID)
-	plan.DisplayName = types.StringValue(sa.DisplayName)
 	plan.APIToken = types.StringValue(sa.APIToken)
 
-	// Set entry_managed_by
-	if len(sa.EntryManagedBy) > 0 {
-		embySet, diags := types.SetValueFrom(ctx, types.StringType, sa.EntryManagedBy)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.EntryManagedBy = embySet
-	} else {
-		plan.EntryManagedBy = types.SetNull(types.StringType)
+	createdSA, err := r.client.GetServiceAccount(ctx, sa.Name)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Service Account",
+			"Service account was created but could not be read back: "+err.Error(),
+		)
+		return
+	}
+
+	if err := r.applyServiceAccountState(ctx, &plan, createdSA); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Service Account",
+			"Service account was created but could not be mapped back to Terraform state: "+err.Error(),
+		)
+		return
 	}
 
 	tflog.Debug(ctx, "Service account created successfully", map[string]any{
@@ -193,19 +217,12 @@ func (r *serviceAccountResource) Read(ctx context.Context, req resource.ReadRequ
 	}
 
 	// Update state with current values
-	state.ID = types.StringValue(sa.ID)
-	state.DisplayName = types.StringValue(sa.DisplayName)
-
-	// Set entry_managed_by
-	if len(sa.EntryManagedBy) > 0 {
-		embySet, diags := types.SetValueFrom(ctx, types.StringType, sa.EntryManagedBy)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		state.EntryManagedBy = embySet
-	} else {
-		state.EntryManagedBy = types.SetNull(types.StringType)
+	if err := r.applyServiceAccountState(ctx, &state, sa); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Service Account",
+			"Could not map service account data into Terraform state: "+err.Error(),
+		)
+		return
 	}
 
 	// API token is write-only and cannot be read back, preserve existing state value
@@ -223,7 +240,7 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 	}
 
 	tflog.Debug(ctx, "Updating service account", map[string]any{
-		"id": plan.ID.ValueString(),
+		"id": state.ID.ValueString(),
 	})
 
 	// Check if entry_managed_by has changed
@@ -240,18 +257,31 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 		}
 
 		tflog.Debug(ctx, "EntryManagedBy changed, updating service account", map[string]any{
-			"id": plan.ID.ValueString(),
+			"id": state.ID.ValueString(),
 		})
 	}
 
+	nameChanged := !plan.Name.Equal(state.Name)
 	// Check if displayname has changed
 	displayNameChanged := !plan.DisplayName.Equal(state.DisplayName)
 
 	// Only call UpdateServiceAccount if something changed
-	if displayNameChanged || entryManagedByChanged {
+	if nameChanged || displayNameChanged || entryManagedByChanged {
+		var name *string
+		if nameChanged {
+			newName := plan.Name.ValueString()
+			name = &newName
+		}
+
+		var displayName *string
+		if displayNameChanged {
+			newDisplayName := plan.DisplayName.ValueString()
+			displayName = &newDisplayName
+		}
+
 		if displayNameChanged {
 			tflog.Debug(ctx, "Displayname changed, updating service account", map[string]any{
-				"id":              plan.ID.ValueString(),
+				"id":              state.ID.ValueString(),
 				"old_displayname": state.DisplayName.ValueString(),
 				"new_displayname": plan.DisplayName.ValueString(),
 			})
@@ -267,8 +297,9 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 
 		err := r.client.UpdateServiceAccount(
 			ctx,
-			plan.ID.ValueString(),
-			plan.DisplayName.ValueString(),
+			state.ID.ValueString(),
+			name,
+			displayName,
 			emby,
 		)
 		if err != nil {
@@ -278,6 +309,23 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 			)
 			return
 		}
+	}
+
+	updatedSA, err := r.client.GetServiceAccount(ctx, state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Service Account",
+			"Service account was updated but could not be read back: "+err.Error(),
+		)
+		return
+	}
+
+	if err := r.applyServiceAccountState(ctx, &plan, updatedSA); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Service Account",
+			"Service account was updated but could not be mapped back to Terraform state: "+err.Error(),
+		)
+		return
 	}
 
 	// Preserve API token (cannot be updated)

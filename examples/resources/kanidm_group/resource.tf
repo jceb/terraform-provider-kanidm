@@ -1,6 +1,6 @@
 # Example: Group with person and service account members
 resource "kanidm_group" "developers" {
-  id          = "developers"
+  name        = "developers"
   description = "Development team members"
 
   members = [
@@ -12,7 +12,7 @@ resource "kanidm_group" "developers" {
 
 # Example: Group with only person members
 resource "kanidm_group" "admins" {
-  id          = "infrastructure-admins"
+  name        = "infrastructure-admins"
   description = "Infrastructure administrators with full access"
 
   members = [
@@ -23,13 +23,13 @@ resource "kanidm_group" "admins" {
 
 # Example: Empty group (members added later)
 resource "kanidm_group" "monitoring" {
-  id          = "monitoring-users"
+  name        = "monitoring-users"
   description = "Users with monitoring access"
 }
 
 # Example: Group with dynamic membership
 resource "kanidm_group" "all_staff" {
-  id          = "all-staff"
+  name        = "all-staff"
   description = "All staff members"
 
   members = [
@@ -40,6 +40,6 @@ resource "kanidm_group" "all_staff" {
 # Example: Imported existing group
 # Import command: terraform import kanidm_group.existing_group group_name
 resource "kanidm_group" "existing_group" {
-  id          = "existing"
+  name        = "existing"
   description = "Existing Group"
 }

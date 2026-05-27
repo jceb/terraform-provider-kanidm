@@ -24,8 +24,9 @@ type kanidmProvider struct {
 
 // kanidmProviderModel describes the provider data model
 type kanidmProviderModel struct {
-	URL   types.String `tfsdk:"url"`
-	Token types.String `tfsdk:"token"`
+	URL            types.String         `tfsdk:"url"`
+	Token          types.String         `tfsdk:"token"`
+	PersonDefaults *personDefaultsModel `tfsdk:"person_defaults"`
 }
 
 // New creates a new provider instance
@@ -56,6 +57,28 @@ func (p *kanidmProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 				Description: "Kanidm API token for authentication. May also be provided via KANIDM_TOKEN environment variable.",
 				Optional:    true,
 				Sensitive:   true,
+			},
+			"person_defaults": schema.SingleNestedAttribute{
+				Description: "Default management behavior for person resources.",
+				Optional:    true,
+				Attributes: map[string]schema.Attribute{
+					"name_management": schema.StringAttribute{
+						Description: "Default management mode for person names. Valid values: `managed`, `initial`.",
+						Optional:    true,
+					},
+					"display_management": schema.StringAttribute{
+						Description: "Default management mode for person display names. Valid values: `managed`, `initial`.",
+						Optional:    true,
+					},
+					"generate_initial_credential_reset_token": schema.BoolAttribute{
+						Description: "Whether person resources should create an initial credential reset token during creation by default.",
+						Optional:    true,
+					},
+					"initial_credential_reset_token_ttl": schema.Int64Attribute{
+						Description: "Default TTL in seconds for initial credential reset tokens generated during person creation.",
+						Optional:    true,
+					},
+				},
 			},
 		},
 	}
@@ -113,10 +136,43 @@ func (p *kanidmProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	})
 
 	apiClient := client.NewClient(url, token)
+	personDefaults := personManagementDefaults{
+		Name:                        managementModeInitial,
+		Display:                     managementModeManaged,
+		GenerateInitialResetToken:   false,
+		InitialResetTokenTTLSeconds: 3600,
+	}
+
+	if config.PersonDefaults != nil {
+		nameMode, diags := resolveManagementMode(config.PersonDefaults.NameManagement, personDefaults.Name, "person_defaults.name_management")
+		resp.Diagnostics.Append(diags...)
+		displayMode, diags := resolveManagementMode(config.PersonDefaults.DisplayManagement, personDefaults.Display, "person_defaults.display_management")
+		resp.Diagnostics.Append(diags...)
+
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		personDefaults.Name = nameMode
+		personDefaults.Display = displayMode
+
+		if !config.PersonDefaults.GenerateInitialCredentialResetToken.IsNull() && !config.PersonDefaults.GenerateInitialCredentialResetToken.IsUnknown() {
+			personDefaults.GenerateInitialResetToken = config.PersonDefaults.GenerateInitialCredentialResetToken.ValueBool()
+		}
+
+		if !config.PersonDefaults.InitialCredentialResetTokenTTL.IsNull() && !config.PersonDefaults.InitialCredentialResetTokenTTL.IsUnknown() {
+			personDefaults.InitialResetTokenTTLSeconds = config.PersonDefaults.InitialCredentialResetTokenTTL.ValueInt64()
+		}
+	}
+
+	providerData := &providerData{
+		client:         apiClient,
+		personDefaults: personDefaults,
+	}
 
 	// Make the client available to data sources and resources
-	resp.DataSourceData = apiClient
-	resp.ResourceData = apiClient
+	resp.DataSourceData = providerData
+	resp.ResourceData = providerData
 
 	tflog.Info(ctx, "Configured Kanidm client", map[string]any{
 		"success": true,

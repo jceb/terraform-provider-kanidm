@@ -3,6 +3,7 @@ resource "kanidm_oauth2_basic" "grafana" {
   name        = "grafana"
   displayname = "Grafana"
   origin      = "https://grafana.example.com"
+  image_path  = "${path.module}/grafana.png"
 
   redirect_uris = [
     "https://grafana.example.com/login/generic_oauth"

@@ -104,9 +104,9 @@ The provider accepts configuration via:
 ### Credential Reset Tokens
 
 Person resources support generating credential reset tokens:
-- Set `generate_credential_reset_token = true`
-- Optionally set `credential_reset_token_ttl` (seconds, default: 3600)
-- Token available in computed attribute `credential_reset_token` (sensitive)
+- Set `generate_initial_credential_reset_token = true`
+- Optionally set `initial_credential_reset_token_ttl` (seconds, default: 3600)
+- Token available in computed attribute `initial_credential_reset_token` (sensitive)
 - Token is one-time use for setting up passkeys/passwords via web UI
 
 ## Development Environment

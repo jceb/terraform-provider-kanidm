@@ -52,16 +52,16 @@ go build -o terraform-provider-kanidm
 
 ```hcl
 resource "kanidm_person" "alice" {
-  id                              = "alice"
-  displayname                     = "Alice Smith"
-  mail                            = ["alice@example.com"]
-  generate_credential_reset_token = true
-  credential_reset_token_ttl      = 7200  # 2 hours
+  name                                   = "alice"
+  displayname                            = "Alice Smith"
+  mail                                   = ["alice@example.com"]
+  generate_initial_credential_reset_token = true
+  initial_credential_reset_token_ttl      = 7200  # 2 hours
 }
 
 # Output the credential reset token for user setup
 output "alice_reset_token" {
-  value     = kanidm_person.alice.credential_reset_token
+  value     = kanidm_person.alice.initial_credential_reset_token
   sensitive = true
 }
 ```
@@ -70,7 +70,7 @@ output "alice_reset_token" {
 
 ```hcl
 resource "kanidm_service_account" "terraform" {
-  id          = "terraform-automation"
+  name        = "terraform-automation"
   displayname = "Terraform Automation Account"
 }
 
@@ -84,7 +84,7 @@ output "terraform_api_token" {
 
 ```hcl
 resource "kanidm_group" "developers" {
-  id          = "developers"
+  name        = "developers"
   description = "Development team members"
 
   members = [
@@ -102,6 +102,7 @@ resource "kanidm_oauth2_basic" "grafana" {
   name        = "grafana"
   displayname = "Grafana"
   origin      = "https://grafana.example.com"
+  image_path  = "${path.module}/grafana.png"
 
   redirect_uris = [
     "https://grafana.example.com/login/generic_oauth"

@@ -7,7 +7,8 @@ import (
 
 // Person represents a Kanidm person account
 type Person struct {
-	ID          string
+	UUID        string
+	Name        string
 	DisplayName string
 	Mail        []string
 }
@@ -27,7 +28,7 @@ func (c *Client) CreatePerson(ctx context.Context, name, displayName string) (*P
 
 	// Return the created person
 	return &Person{
-		ID:          name,
+		Name:        name,
 		DisplayName: displayName,
 	}, nil
 }
@@ -45,18 +46,23 @@ func (c *Client) GetPerson(ctx context.Context, id string) (*Person, error) {
 	}
 
 	return &Person{
-		ID:          entry.GetString("name"),
+		UUID:        firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
+		Name:        entry.GetString("name"),
 		DisplayName: entry.GetString("displayname"),
 		Mail:        entry.GetStringSlice("mail"),
 	}, nil
 }
 
 // UpdatePerson updates a person account
-func (c *Client) UpdatePerson(ctx context.Context, id string, displayName string, mail []string) error {
+func (c *Client) UpdatePerson(ctx context.Context, id string, name *string, displayName *string, mail []string) error {
 	attrs := make(map[string]any)
 
-	if displayName != "" {
-		attrs["displayname"] = []string{displayName}
+	if name != nil {
+		attrs["name"] = []string{*name}
+	}
+
+	if displayName != nil {
+		attrs["displayname"] = []string{*displayName}
 	}
 
 	if mail != nil {
@@ -72,6 +78,16 @@ func (c *Client) UpdatePerson(ctx context.Context, id string, displayName string
 	defer func() { _ = resp.Body.Close() }()
 
 	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+
+	return ""
 }
 
 // DeletePerson deletes a person account

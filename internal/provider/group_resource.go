@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -28,6 +29,7 @@ type groupResource struct {
 }
 
 type groupResourceModel struct {
+	Name        types.String `tfsdk:"name"`
 	ID          types.String `tfsdk:"id"`
 	Description types.String `tfsdk:"description"`
 	Members     types.Set    `tfsdk:"members"`
@@ -47,7 +49,7 @@ Groups are used to organize users and service accounts, and control access to re
 
 ` + "```hcl" + `
 resource "kanidm_group" "developers" {
-  id          = "developers"
+  name        = "developers"
   description = "Development team members"
 
   members = [
@@ -59,11 +61,15 @@ resource "kanidm_group" "developers" {
 ` + "```" + ``,
 
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				MarkdownDescription: "Unique identifier for the group (group name). Cannot be changed after creation.",
+			"name": schema.StringAttribute{
+				MarkdownDescription: "Group name. This can be changed outside Terraform, but is tracked via the stable UUID in `id`.",
 				Required:            true,
+			},
+			"id": schema.StringAttribute{
+				MarkdownDescription: "Stable Kanidm UUID for this group. This value is computed after creation/import and used to keep the resource linked across external renames.",
+				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"description": schema.StringAttribute{
@@ -81,20 +87,70 @@ resource "kanidm_group" "developers" {
 }
 
 func (r *groupResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	data := configureResource(req, resp)
+	if data == nil {
 		return
 	}
 
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			"Expected *client.Client. Please report this issue to the provider developers.",
-		)
-		return
+	r.client = data.client
+}
+
+func (r *groupResource) normalizeMemberIdentifiers(ctx context.Context, members []string) ([]string, error) {
+	if len(members) == 0 {
+		return []string{}, nil
 	}
 
-	r.client = c
+	normalized := make([]string, 0, len(members))
+
+	for _, member := range members {
+		person, err := r.client.GetPerson(ctx, member)
+		if err == nil {
+			if person.UUID == "" {
+				return nil, fmt.Errorf("person %q did not return a UUID", member)
+			}
+			normalized = append(normalized, person.UUID)
+			continue
+		}
+		if !errors.Is(err, client.ErrNotFound) {
+			return nil, fmt.Errorf("resolve person member %q: %w", member, err)
+		}
+
+		serviceAccount, err := r.client.GetServiceAccount(ctx, member)
+		if err == nil {
+			normalized = append(normalized, serviceAccount.Name)
+			continue
+		}
+		if !errors.Is(err, client.ErrNotFound) {
+			return nil, fmt.Errorf("resolve service account member %q: %w", member, err)
+		}
+
+		normalized = append(normalized, member)
+	}
+
+	return normalized, nil
+}
+
+func (r *groupResource) applyGroupState(ctx context.Context, model *groupResourceModel, group *client.Group) error {
+	if group.UUID == "" {
+		return errors.New("Kanidm did not return a UUID for the requested group")
+	}
+
+	model.ID = types.StringValue(group.UUID)
+	model.Name = types.StringValue(group.Name)
+	model.Description = types.StringValue(group.Description)
+
+	normalizedMembers, err := r.normalizeMemberIdentifiers(ctx, group.Members)
+	if err != nil {
+		return err
+	}
+
+	membersSet, diags := types.SetValueFrom(ctx, types.StringType, normalizedMembers)
+	if diags.HasError() {
+		return fmt.Errorf("convert members set: %s", diags.Errors()[0].Summary())
+	}
+	model.Members = membersSet
+
+	return nil
 }
 
 func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -105,7 +161,7 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 
 	tflog.Debug(ctx, "Creating group", map[string]any{
-		"id": plan.ID.ValueString(),
+		"name": plan.Name.ValueString(),
 	})
 
 	// Create the group
@@ -114,7 +170,7 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 		description = plan.Description.ValueString()
 	}
 
-	group, err := r.client.CreateGroup(ctx, plan.ID.ValueString(), description)
+	group, err := r.client.CreateGroup(ctx, plan.Name.ValueString(), description)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Group",
@@ -135,7 +191,7 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 			tflog.Debug(ctx, "Adding members to group", map[string]any{
 				"count": len(memberIDs),
 			})
-			if err := r.client.UpdateGroup(ctx, group.ID, "", memberIDs); err != nil {
+			if err := r.client.UpdateGroup(ctx, group.Name, nil, nil, memberIDs); err != nil {
 				resp.Diagnostics.AddError(
 					"Error Adding Members",
 					"Group was created but members could not be added: "+err.Error(),
@@ -146,7 +202,7 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 
 	// Read back the created group
-	createdGroup, err := r.client.GetGroup(ctx, group.ID)
+	createdGroup, err := r.client.GetGroup(ctx, group.Name)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Group",
@@ -155,17 +211,13 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	// Map response to state
-	plan.ID = types.StringValue(createdGroup.ID)
-	plan.Description = types.StringValue(createdGroup.Description)
-
-	// Always set members as a set (empty if no members)
-	membersSet, diags := types.SetValueFrom(ctx, types.StringType, createdGroup.Members)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if err := r.applyGroupState(ctx, &plan, createdGroup); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Group",
+			"Group was created but could not be mapped back to Terraform state: "+err.Error(),
+		)
 		return
 	}
-	plan.Members = membersSet
 
 	tflog.Debug(ctx, "Group created successfully", map[string]any{
 		"id": plan.ID.ValueString(),
@@ -203,17 +255,13 @@ func (r *groupResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	// Update state with current values
-	state.ID = types.StringValue(group.ID)
-	state.Description = types.StringValue(group.Description)
-
-	// Always set members as a set (empty if no members)
-	membersSet, diags := types.SetValueFrom(ctx, types.StringType, group.Members)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if err := r.applyGroupState(ctx, &state, group); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Group",
+			"Could not map group data into Terraform state: "+err.Error(),
+		)
 		return
 	}
-	state.Members = membersSet
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -228,7 +276,7 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	tflog.Debug(ctx, "Updating group", map[string]any{
-		"id": plan.ID.ValueString(),
+		"id": state.ID.ValueString(),
 	})
 
 	// Prepare members list
@@ -240,13 +288,25 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		}
 	}
 
-	// Update group (description and members)
-	description := ""
-	if !plan.Description.IsNull() {
-		description = plan.Description.ValueString()
+	nameChanged := !plan.Name.Equal(state.Name)
+	descriptionChanged := !plan.Description.Equal(state.Description)
+
+	var name *string
+	if nameChanged {
+		newName := plan.Name.ValueString()
+		name = &newName
 	}
 
-	if err := r.client.UpdateGroup(ctx, plan.ID.ValueString(), description, memberIDs); err != nil {
+	var description *string
+	if descriptionChanged {
+		newDescription := ""
+		if !plan.Description.IsNull() {
+			newDescription = plan.Description.ValueString()
+		}
+		description = &newDescription
+	}
+
+	if err := r.client.UpdateGroup(ctx, state.ID.ValueString(), name, description, memberIDs); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Group",
 			"Could not update group: "+err.Error(),
@@ -255,7 +315,7 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	// Read back the updated group
-	updatedGroup, err := r.client.GetGroup(ctx, plan.ID.ValueString())
+	updatedGroup, err := r.client.GetGroup(ctx, state.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading Group",
@@ -264,17 +324,13 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	// Update state
-	plan.ID = types.StringValue(updatedGroup.ID)
-	plan.Description = types.StringValue(updatedGroup.Description)
-
-	// Always set members as a set (empty if no members)
-	membersSet, diags := types.SetValueFrom(ctx, types.StringType, updatedGroup.Members)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if err := r.applyGroupState(ctx, &plan, updatedGroup); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Group",
+			"Group was updated but could not be mapped back to Terraform state: "+err.Error(),
+		)
 		return
 	}
-	plan.Members = membersSet
 
 	tflog.Debug(ctx, "Group updated successfully", map[string]any{
 		"id": plan.ID.ValueString(),

@@ -35,21 +35,21 @@ provider "kanidm" {
 
 # Create a person account with passkey authentication
 resource "kanidm_person" "alice" {
-  id                              = "alice"
-  displayname                     = "Alice Smith"
-  mail                            = ["alice@example.com"]
-  generate_credential_reset_token = true
+  name                                   = "alice"
+  displayname                            = "Alice Smith"
+  mail                                   = ["alice@example.com"]
+  generate_initial_credential_reset_token = true
 }
 
 # Create a service account
 resource "kanidm_service_account" "terraform" {
-  id          = "terraform-automation"
+  name        = "terraform-automation"
   displayname = "Terraform Automation Account"
 }
 
 # Create a group with members
 resource "kanidm_group" "developers" {
-  id          = "developers"
+  name        = "developers"
   description = "Development team members"
 
   members = [
@@ -63,6 +63,7 @@ resource "kanidm_oauth2_basic" "grafana" {
   name        = "grafana"
   displayname = "Grafana"
   origin      = "https://grafana.example.com"
+  image_path  = "${path.module}/grafana.png"
 
   redirect_uris = [
     "https://grafana.example.com/login/generic_oauth"

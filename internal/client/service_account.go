@@ -10,7 +10,8 @@ import (
 
 // ServiceAccount represents a Kanidm service account
 type ServiceAccount struct {
-	ID             string
+	UUID           string
+	Name           string
 	DisplayName    string
 	APIToken       string   // Only populated on creation
 	EntryManagedBy []string // Account/group IDs that can manage this entry
@@ -39,7 +40,7 @@ func (c *Client) CreateServiceAccount(ctx context.Context, name, displayName str
 	defer func() { _ = resp.Body.Close() }()
 
 	sa := &ServiceAccount{
-		ID:             name,
+		Name:           name,
 		DisplayName:    displayName,
 		EntryManagedBy: entryManagedBy,
 	}
@@ -68,7 +69,8 @@ func (c *Client) GetServiceAccount(ctx context.Context, id string) (*ServiceAcco
 	}
 
 	return &ServiceAccount{
-		ID:             entry.GetString("name"),
+		UUID:           firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
+		Name:           entry.GetString("name"),
 		DisplayName:    entry.GetString("displayname"),
 		EntryManagedBy: entry.GetStringSlice("entry_managed_by"),
 		// Note: API tokens are not returned in GET responses
@@ -76,11 +78,15 @@ func (c *Client) GetServiceAccount(ctx context.Context, id string) (*ServiceAcco
 }
 
 // UpdateServiceAccount updates a service account
-func (c *Client) UpdateServiceAccount(ctx context.Context, id, displayName string, entryManagedBy []string) error {
+func (c *Client) UpdateServiceAccount(ctx context.Context, id string, name *string, displayName *string, entryManagedBy []string) error {
 	attrs := make(map[string]any)
 
-	if displayName != "" {
-		attrs["displayname"] = []string{displayName}
+	if name != nil {
+		attrs["name"] = []string{*name}
+	}
+
+	if displayName != nil {
+		attrs["displayname"] = []string{*displayName}
 	}
 
 	if entryManagedBy != nil {

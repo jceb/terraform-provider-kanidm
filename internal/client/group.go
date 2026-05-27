@@ -7,7 +7,8 @@ import (
 
 // Group represents a Kanidm group
 type Group struct {
-	ID          string
+	UUID        string
+	Name        string
 	Description string
 	Members     []string
 }
@@ -31,7 +32,7 @@ func (c *Client) CreateGroup(ctx context.Context, name, description string) (*Gr
 	defer func() { _ = resp.Body.Close() }()
 
 	return &Group{
-		ID:          name,
+		Name:        name,
 		Description: description,
 	}, nil
 }
@@ -55,18 +56,23 @@ func (c *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
 	}
 
 	return &Group{
-		ID:          entry.GetString("name"),
+		UUID:        firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
+		Name:        entry.GetString("name"),
 		Description: entry.GetString("description"),
 		Members:     members,
 	}, nil
 }
 
 // UpdateGroup updates a group
-func (c *Client) UpdateGroup(ctx context.Context, id, description string, members []string) error {
+func (c *Client) UpdateGroup(ctx context.Context, id string, name *string, description *string, members []string) error {
 	attrs := make(map[string]any)
 
-	if description != "" {
-		attrs["description"] = []string{description}
+	if name != nil {
+		attrs["name"] = []string{*name}
+	}
+
+	if description != nil {
+		attrs["description"] = []string{*description}
 	}
 
 	if members != nil {

@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -17,6 +20,7 @@ import (
 var (
 	_ resource.Resource                = (*oauth2BasicResource)(nil)
 	_ resource.ResourceWithImportState = (*oauth2BasicResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*oauth2BasicResource)(nil)
 )
 
 func NewOAuth2BasicResource() resource.Resource {
@@ -28,10 +32,13 @@ type oauth2BasicResource struct {
 }
 
 type oauth2BasicResourceModel struct {
+	ID           types.String `tfsdk:"id"`
 	Name         types.String `tfsdk:"name"`
 	DisplayName  types.String `tfsdk:"displayname"`
 	Origin       types.String `tfsdk:"origin"`
 	RedirectURIs types.List   `tfsdk:"redirect_uris"`
+	ImagePath    types.String `tfsdk:"image_path"`
+	ImageSHA256  types.String `tfsdk:"image_sha256"`
 	ScopeMaps    types.Set    `tfsdk:"scope_map"`
 	ClientSecret types.String `tfsdk:"client_secret"`
 }
@@ -39,6 +46,26 @@ type oauth2BasicResourceModel struct {
 type scopeMapModel struct {
 	Group  types.String `tfsdk:"group"`
 	Scopes types.List   `tfsdk:"scopes"`
+}
+
+func firstKnownString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+
+	return ""
+}
+
+func hashFileSHA256(filePath string) (string, error) {
+	contents, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("read file %q: %w", filePath, err)
+	}
+
+	sum := sha256.Sum256(contents)
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func (r *oauth2BasicResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -86,12 +113,16 @@ output "grafana_client_secret" {
 Store it securely immediately after creation. You can regenerate it using the Kanidm CLI if needed.`,
 
 		Attributes: map[string]schema.Attribute{
-			"name": schema.StringAttribute{
-				MarkdownDescription: "Unique identifier for the OAuth2 client (client ID). Cannot be changed after creation.",
-				Required:            true,
+			"id": schema.StringAttribute{
+				MarkdownDescription: "Stable Kanidm UUID for this OAuth2 client. This value is computed after creation/import and used to keep the resource linked across external renames.",
+				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"name": schema.StringAttribute{
+				MarkdownDescription: "OAuth2 client name (client ID). This can be changed outside Terraform, but is tracked via the stable UUID in `id`.",
+				Required:            true,
 			},
 			"displayname": schema.StringAttribute{
 				MarkdownDescription: "Display name of the OAuth2 client.",
@@ -106,11 +137,25 @@ Store it securely immediately after creation. You can regenerate it using the Ka
 				Optional:            true,
 				ElementType:         types.StringType,
 			},
+			"image_path": schema.StringAttribute{
+				MarkdownDescription: "Optional local path to an image file to upload for the OAuth2 client. The provider tracks the local file hash, but does not currently detect remote image changes made outside Terraform.",
+				Optional:            true,
+			},
+			"image_sha256": schema.StringAttribute{
+				MarkdownDescription: "SHA-256 hash of the local image file last applied for this OAuth2 client.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"client_secret": schema.StringAttribute{
 				MarkdownDescription: "Client secret for the OAuth2 basic client. **Only available during creation.** " +
 					"Store this secret securely as it cannot be retrieved later.",
 				Computed:  true,
 				Sensitive: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -136,20 +181,64 @@ Store it securely immediately after creation. You can regenerate it using the Ka
 }
 
 func (r *oauth2BasicResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+	data := configureResource(req, resp)
+	if data == nil {
 		return
 	}
 
-	c, ok := req.ProviderData.(*client.Client)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			"Expected *client.Client. Please report this issue to the provider developers.",
-		)
+	r.client = data.client
+}
+
+func (r *oauth2BasicResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
 		return
 	}
 
-	r.client = c
+	var plan oauth2BasicResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.ImagePath.IsNull() || plan.ImagePath.IsUnknown() || plan.ImagePath.ValueString() == "" {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("image_sha256"), types.StringNull())...)
+		return
+	}
+
+	hash, err := hashFileSHA256(plan.ImagePath.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error Hashing OAuth2 Image", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("image_sha256"), types.StringValue(hash))...)
+}
+
+func (r *oauth2BasicResource) applyOAuth2BasicState(ctx context.Context, model *oauth2BasicResourceModel, oauth2Client *client.OAuth2Client) error {
+	if oauth2Client.UUID == "" {
+		return errors.New("Kanidm did not return a UUID for the requested OAuth2 client")
+	}
+
+	model.ID = types.StringValue(oauth2Client.UUID)
+	model.Name = types.StringValue(oauth2Client.Name)
+	model.DisplayName = types.StringValue(oauth2Client.DisplayName)
+	model.Origin = types.StringValue(oauth2Client.Origin)
+
+	if len(oauth2Client.RedirectURIs) > 0 {
+		redirectURIsList, diags := types.ListValueFrom(ctx, types.StringType, oauth2Client.RedirectURIs)
+		if diags.HasError() {
+			return errors.New(diags.Errors()[0].Summary())
+		}
+		model.RedirectURIs = redirectURIsList
+	} else {
+		model.RedirectURIs = types.ListNull(types.StringType)
+	}
+
+	if model.ImagePath.IsNull() || model.ImagePath.IsUnknown() || model.ImagePath.ValueString() == "" {
+		model.ImageSHA256 = types.StringNull()
+	}
+
+	return nil
 }
 
 func (r *oauth2BasicResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -193,7 +282,7 @@ func (r *oauth2BasicResource) Create(ctx context.Context, req resource.CreateReq
 		"redirect_count": len(redirectURIs),
 	})
 
-	if err := r.client.UpdateOAuth2Client(ctx, oauth2Client.Name, plan.DisplayName.ValueString(), plan.Origin.ValueString(), redirectURIs); err != nil {
+	if err := r.client.UpdateOAuth2Client(ctx, oauth2Client.Name, nil, plan.DisplayName.ValueString(), plan.Origin.ValueString(), redirectURIs); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Setting OAuth2 Configuration",
 			"OAuth2 client was created but configuration could not be set: "+err.Error(),
@@ -231,8 +320,18 @@ func (r *oauth2BasicResource) Create(ctx context.Context, req resource.CreateReq
 		}
 	}
 
+	if !plan.ImagePath.IsNull() && !plan.ImagePath.IsUnknown() && plan.ImagePath.ValueString() != "" {
+		if err := r.client.UploadOAuth2Image(ctx, oauth2Client.Name, plan.ImagePath.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error Uploading OAuth2 Image",
+				"OAuth2 client was created but the image could not be uploaded: "+err.Error(),
+			)
+			return
+		}
+	}
+
 	// Read back the created OAuth2 client
-	createdClient, err := r.client.GetOAuth2Client(ctx, oauth2Client.Name)
+	createdClient, err := r.client.ResolveOAuth2Client(ctx, oauth2Client.Name)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading OAuth2 Client",
@@ -241,21 +340,16 @@ func (r *oauth2BasicResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// Map response to state
-	plan.Name = types.StringValue(createdClient.Name)
-	plan.DisplayName = types.StringValue(createdClient.DisplayName)
-	plan.Origin = types.StringValue(createdClient.Origin)
+	if err := r.applyOAuth2BasicState(ctx, &plan, createdClient); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading OAuth2 Client",
+			"OAuth2 client was created but could not be mapped back to Terraform state: "+err.Error(),
+		)
+		return
+	}
 	plan.ClientSecret = types.StringValue(oauth2Client.ClientSecret)
-
-	if len(createdClient.RedirectURIs) > 0 {
-		redirectURIsList, diags := types.ListValueFrom(ctx, types.StringType, createdClient.RedirectURIs)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.RedirectURIs = redirectURIsList
-	} else {
-		plan.RedirectURIs = types.ListNull(types.StringType)
+	if plan.ImagePath.IsNull() || plan.ImagePath.IsUnknown() || plan.ImagePath.ValueString() == "" {
+		plan.ImageSHA256 = types.StringNull()
 	}
 
 	// Keep the scope maps from the plan (can't read them back from API in current form)
@@ -276,15 +370,15 @@ func (r *oauth2BasicResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	tflog.Debug(ctx, "Reading OAuth2 basic client", map[string]any{
-		"name": state.Name.ValueString(),
+		"id": state.ID.ValueString(),
 	})
 
-	// Get current OAuth2 client from API
-	oauth2Client, err := r.client.GetOAuth2Client(ctx, state.Name.ValueString())
+	// Get current OAuth2 client from API.
+	oauth2Client, err := r.client.ResolveOAuth2Client(ctx, firstKnownString(state.ID.ValueString(), state.Name.ValueString()))
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			tflog.Warn(ctx, "OAuth2 basic client not found, removing from state", map[string]any{
-				"name": state.Name.ValueString(),
+				"id": state.ID.ValueString(),
 			})
 			resp.State.RemoveResource(ctx)
 			return
@@ -307,20 +401,12 @@ func (r *oauth2BasicResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	// Update state with current values
-	state.Name = types.StringValue(oauth2Client.Name)
-	state.DisplayName = types.StringValue(oauth2Client.DisplayName)
-	state.Origin = types.StringValue(oauth2Client.Origin)
-
-	if len(oauth2Client.RedirectURIs) > 0 {
-		redirectURIsList, diags := types.ListValueFrom(ctx, types.StringType, oauth2Client.RedirectURIs)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		state.RedirectURIs = redirectURIsList
-	} else {
-		state.RedirectURIs = types.ListNull(types.StringType)
+	if err := r.applyOAuth2BasicState(ctx, &state, oauth2Client); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading OAuth2 Basic Client",
+			"Could not map OAuth2 client data into Terraform state: "+err.Error(),
+		)
+		return
 	}
 
 	// Retrieve client secret if not already in state (e.g., after import)
@@ -328,22 +414,23 @@ func (r *oauth2BasicResource) Read(ctx context.Context, req resource.ReadRequest
 		tflog.Debug(ctx, "Client secret not in state, retrieving from API", map[string]any{
 			"name": state.Name.ValueString(),
 		})
-		secret, err := r.client.GetOAuth2BasicSecret(ctx, state.Name.ValueString())
+		secret, err := r.client.GetOAuth2BasicSecret(ctx, oauth2Client.Name)
 		if err != nil {
 			tflog.Warn(ctx, "Could not retrieve client secret", map[string]any{
-				"name":  state.Name.ValueString(),
+				"name":  oauth2Client.Name,
 				"error": err.Error(),
 			})
 			// Don't fail the read, just leave secret empty
 		} else {
 			state.ClientSecret = types.StringValue(secret)
 			tflog.Debug(ctx, "Retrieved client secret successfully", map[string]any{
-				"name": state.Name.ValueString(),
+				"name": oauth2Client.Name,
 			})
 		}
 	}
 
 	// Scope maps preserved from state (can't read them back in current form)
+	// Local image tracking is preserved from state/config only.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -358,8 +445,17 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	tflog.Debug(ctx, "Updating OAuth2 basic client", map[string]any{
-		"name": plan.Name.ValueString(),
+		"id": state.ID.ValueString(),
 	})
+
+	resolvedClient, err := r.client.ResolveOAuth2Client(ctx, firstKnownString(state.ID.ValueString(), state.Name.ValueString()))
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Resolving OAuth2 Basic Client",
+			"Could not resolve OAuth2 basic client before update: "+err.Error(),
+		)
+		return
+	}
 
 	// Prepare redirect URIs
 	var redirectURIs []string
@@ -370,10 +466,19 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 		}
 	}
 
-	// Update OAuth2 client (displayname, origin, redirect URIs)
+	// Detect name changes so we can rename the OAuth2 client if needed.
+	nameChanged := !plan.Name.Equal(state.Name)
+	var newName *string
+	if nameChanged {
+		n := plan.Name.ValueString()
+		newName = &n
+	}
+
+	// Update OAuth2 client (name, displayname, origin, redirect URIs)
 	if err := r.client.UpdateOAuth2Client(
 		ctx,
-		plan.Name.ValueString(),
+		resolvedClient.Name,
+		newName,
 		plan.DisplayName.ValueString(),
 		plan.Origin.ValueString(),
 		redirectURIs,
@@ -383,6 +488,12 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 			"Could not update OAuth2 basic client: "+err.Error(),
 		)
 		return
+	}
+
+	// After a successful rename, subsequent API calls must use the new name.
+	effectiveName := resolvedClient.Name
+	if nameChanged {
+		effectiveName = plan.Name.ValueString()
 	}
 
 	// Handle scope map changes
@@ -421,7 +532,7 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 			tflog.Debug(ctx, "Deleting scope map", map[string]any{
 				"group": group,
 			})
-			if err := r.client.DeleteOAuth2ScopeMap(ctx, plan.Name.ValueString(), group); err != nil {
+			if err := r.client.DeleteOAuth2ScopeMap(ctx, effectiveName, group); err != nil {
 				resp.Diagnostics.AddError(
 					"Error Deleting Scope Map",
 					"Could not delete scope map: "+err.Error(),
@@ -437,7 +548,7 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 			"group":  group,
 			"scopes": scopes,
 		})
-		if err := r.client.SetOAuth2ScopeMap(ctx, plan.Name.ValueString(), group, scopes); err != nil {
+		if err := r.client.SetOAuth2ScopeMap(ctx, effectiveName, group, scopes); err != nil {
 			resp.Diagnostics.AddError(
 				"Error Setting Scope Map",
 				"Could not set scope map: "+err.Error(),
@@ -446,8 +557,28 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 		}
 	}
 
+	if plan.ImagePath.IsNull() || plan.ImagePath.IsUnknown() || plan.ImagePath.ValueString() == "" {
+		if !state.ImageSHA256.IsNull() && !state.ImageSHA256.IsUnknown() && state.ImageSHA256.ValueString() != "" {
+			if err := r.client.DeleteOAuth2Image(ctx, effectiveName); err != nil {
+				resp.Diagnostics.AddError(
+					"Error Deleting OAuth2 Image",
+					"Could not delete OAuth2 image: "+err.Error(),
+				)
+				return
+			}
+		}
+	} else if !plan.ImageSHA256.Equal(state.ImageSHA256) {
+		if err := r.client.UploadOAuth2Image(ctx, effectiveName, plan.ImagePath.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error Uploading OAuth2 Image",
+				"Could not upload OAuth2 image: "+err.Error(),
+			)
+			return
+		}
+	}
+
 	// Read back the updated OAuth2 client
-	updatedClient, err := r.client.GetOAuth2Client(ctx, plan.Name.ValueString())
+	updatedClient, err := r.client.ResolveOAuth2Client(ctx, state.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Reading OAuth2 Client",
@@ -456,24 +587,19 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	// Update state
-	plan.Name = types.StringValue(updatedClient.Name)
-	plan.DisplayName = types.StringValue(updatedClient.DisplayName)
-	plan.Origin = types.StringValue(updatedClient.Origin)
-
-	if len(updatedClient.RedirectURIs) > 0 {
-		redirectURIsList, diags := types.ListValueFrom(ctx, types.StringType, updatedClient.RedirectURIs)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.RedirectURIs = redirectURIsList
-	} else {
-		plan.RedirectURIs = types.ListNull(types.StringType)
+	if err := r.applyOAuth2BasicState(ctx, &plan, updatedClient); err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading OAuth2 Client",
+			"OAuth2 client was updated but could not be mapped back to Terraform state: "+err.Error(),
+		)
+		return
 	}
 
 	// Preserve client secret from state (cannot be read back from API)
 	plan.ClientSecret = state.ClientSecret
+	if plan.ImagePath.IsNull() || plan.ImagePath.IsUnknown() || plan.ImagePath.ValueString() == "" {
+		plan.ImageSHA256 = types.StringNull()
+	}
 
 	tflog.Debug(ctx, "OAuth2 basic client updated successfully", map[string]any{
 		"name": plan.Name.ValueString(),
@@ -490,11 +616,24 @@ func (r *oauth2BasicResource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 
 	tflog.Debug(ctx, "Deleting OAuth2 basic client", map[string]any{
-		"name": state.Name.ValueString(),
+		"id": state.ID.ValueString(),
 	})
 
+	resolvedClient, err := r.client.ResolveOAuth2Client(ctx, firstKnownString(state.ID.ValueString(), state.Name.ValueString()))
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			return
+		}
+
+		resp.Diagnostics.AddError(
+			"Error Resolving OAuth2 Basic Client",
+			"Could not resolve OAuth2 basic client before delete: "+err.Error(),
+		)
+		return
+	}
+
 	// Delete the OAuth2 client
-	if err := r.client.DeleteOAuth2Client(ctx, state.Name.ValueString()); err != nil {
+	if err := r.client.DeleteOAuth2Client(ctx, resolvedClient.Name); err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			tflog.Warn(ctx, "OAuth2 basic client not found during delete, removing from state", map[string]any{
 				"name": state.Name.ValueString(),
@@ -516,7 +655,7 @@ func (r *oauth2BasicResource) Delete(ctx context.Context, req resource.DeleteReq
 
 func (r *oauth2BasicResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	// Use the name directly as the import identifier
-	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 
 	tflog.Debug(ctx, "Imported OAuth2 basic client", map[string]any{
 		"name": req.ID,
