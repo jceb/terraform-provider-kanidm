@@ -201,6 +201,8 @@ func (p *kanidmProvider) Resources(_ context.Context) []func() resource.Resource
 		NewServiceAccountResource,
 		NewGroupResource,
 		NewGroupMembersResource,
+		NewAccountPolicyResource,
+		NewSystemDeniedNamesResource,
 		NewOAuth2BasicResource,
 		NewOAuth2PublicResource,
 	}

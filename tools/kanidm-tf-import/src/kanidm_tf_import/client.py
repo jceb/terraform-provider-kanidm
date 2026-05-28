@@ -28,6 +28,23 @@ class KanidmClient:
         resp.raise_for_status()
         return resp.text
 
+    def _get_attr(self, path: str) -> list[str]:
+        try:
+            resp = self._client.get(path)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return []
+        except httpx.HTTPStatusError:
+            return []
+
+    def get_group_attr(self, group_id: str, attr: str) -> list[str]:
+        return self._get_attr(f"/v1/group/{group_id}/_attr/{attr}")
+
+    def get_system_attr(self, attr: str) -> list[str]:
+        return self._get_attr(f"/v1/system/_attr/{attr}")
+
     def list_persons(self) -> list[Entry]:
         data = self._get("/v1/person")
         return [Entry(raw) for raw in data]

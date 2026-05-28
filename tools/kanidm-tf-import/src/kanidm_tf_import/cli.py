@@ -8,6 +8,7 @@ import typer
 
 from kanidm_tf_import.builtin_groups import ALL_EXTERNAL_MANAGED
 from kanidm_tf_import.client import KanidmClient
+from kanidm_tf_import.generators.account_policy import generate_account_policy, generate_system_denied_names
 from kanidm_tf_import.generators.group import generate_group
 from kanidm_tf_import.generators.oauth2_client import generate_oauth2_client
 from kanidm_tf_import.generators.person import generate_person
@@ -62,6 +63,8 @@ IMPORTABLE_RESOURCES = {
     "kanidm_service_account",
     "kanidm_oauth2_basic",
     "kanidm_oauth2_public",
+    "kanidm_account_policy",
+    "kanidm_system_denied_names",
 }
 
 
@@ -124,6 +127,12 @@ def generate(
     ),
     include_oauth2: bool = typer.Option(
         True, "--oauth2-clients/--no-oauth2-clients", help="Include OAuth2 clients"
+    ),
+    include_account_policies: bool = typer.Option(
+        True, "--account-policies/--no-account-policies", help="Include account policies"
+    ),
+    include_system_policies: bool = typer.Option(
+        True, "--system-policies/--no-system-policies", help="Include system policies"
     ),
     with_provider: bool = typer.Option(
         True, "--provider/--no-provider", help="Include provider block"
@@ -229,6 +238,18 @@ def generate(
                     else "kanidm_oauth2_basic"
                 )
                 import_resources.append((resource_type, tf_name, o.name))
+
+        if include_account_policies and groups:
+            for group in groups:
+                tf_name = generate_account_policy(
+                    group.name, group.uuid, client, resources_builder,
+                )
+                if tf_name:
+                    import_resources.append(("kanidm_account_policy", tf_name, group.uuid))
+
+        if include_system_policies:
+            if generate_system_denied_names(client, resources_builder):
+                import_resources.append(("kanidm_system_denied_names", "this", "denied_names"))
 
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
