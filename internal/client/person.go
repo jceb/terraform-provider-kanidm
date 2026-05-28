@@ -5,12 +5,21 @@ import (
 	"fmt"
 )
 
+const (
+	personAttrLegalName = "legalname"
+	personAttrValidFrom = "account_valid_from"
+	personAttrExpireAt  = "account_expire"
+)
+
 // Person represents a Kanidm person account
 type Person struct {
 	UUID        string
 	Name        string
+	SPN         string
 	DisplayName string
 	LegalName   string
+	ValidFrom   string
+	ExpireAt    string
 	Mail        []string
 }
 
@@ -49,8 +58,11 @@ func (c *Client) GetPerson(ctx context.Context, id string) (*Person, error) {
 	return &Person{
 		UUID:        firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
 		Name:        entry.GetString("name"),
+		SPN:         entry.GetString("spn"),
 		DisplayName: entry.GetString("displayname"),
 		LegalName:   entry.GetString("legalname"),
+		ValidFrom:   entry.GetString(personAttrValidFrom),
+		ExpireAt:    entry.GetString(personAttrExpireAt),
 		Mail:        entry.GetStringSlice("mail"),
 	}, nil
 }
@@ -84,7 +96,7 @@ func (c *Client) UpdatePerson(ctx context.Context, id string, name *string, disp
 
 // SetPersonLegalName sets the legal name for a person account.
 func (c *Client) SetPersonLegalName(ctx context.Context, id, legalName string) error {
-	resp, err := c.doRequest(ctx, "PUT", "/v1/person/"+id+"/_attr/legalname", []string{legalName})
+	resp, err := c.doRequest(ctx, "PUT", "/v1/person/"+id+"/_attr/"+personAttrLegalName, []string{legalName})
 	if err != nil {
 		return fmt.Errorf("set person legal name: %w", err)
 	}
@@ -95,9 +107,49 @@ func (c *Client) SetPersonLegalName(ctx context.Context, id, legalName string) e
 
 // ClearPersonLegalName clears the legal name for a person account.
 func (c *Client) ClearPersonLegalName(ctx context.Context, id string) error {
-	resp, err := c.doRequest(ctx, "DELETE", "/v1/person/"+id+"/_attr/legalname", nil)
+	resp, err := c.doRequest(ctx, "DELETE", "/v1/person/"+id+"/_attr/"+personAttrLegalName, nil)
 	if err != nil {
 		return fmt.Errorf("clear person legal name: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) SetPersonValidFrom(ctx context.Context, id, validFrom string) error {
+	resp, err := c.doRequest(ctx, "PUT", "/v1/person/"+id+"/_attr/"+personAttrValidFrom, []string{validFrom})
+	if err != nil {
+		return fmt.Errorf("set person valid_from: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) ClearPersonValidFrom(ctx context.Context, id string) error {
+	resp, err := c.doRequest(ctx, "DELETE", "/v1/person/"+id+"/_attr/"+personAttrValidFrom, nil)
+	if err != nil {
+		return fmt.Errorf("clear person valid_from: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) SetPersonExpireAt(ctx context.Context, id, expireAt string) error {
+	resp, err := c.doRequest(ctx, "PUT", "/v1/person/"+id+"/_attr/"+personAttrExpireAt, []string{expireAt})
+	if err != nil {
+		return fmt.Errorf("set person expire_at: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) ClearPersonExpireAt(ctx context.Context, id string) error {
+	resp, err := c.doRequest(ctx, "DELETE", "/v1/person/"+id+"/_attr/"+personAttrExpireAt, nil)
+	if err != nil {
+		return fmt.Errorf("clear person expire_at: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

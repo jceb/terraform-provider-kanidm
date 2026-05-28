@@ -8,13 +8,21 @@ import (
 	"strings"
 )
 
+const (
+	serviceAccountAttrValidFrom = "account_valid_from"
+	serviceAccountAttrExpireAt  = "account_expire"
+)
+
 // ServiceAccount represents a Kanidm service account
 type ServiceAccount struct {
 	UUID           string
 	Name           string
+	SPN            string
 	DisplayName    string
 	APIToken       string   // Only populated on creation
 	EntryManagedBy []string // Account/group IDs that can manage this entry
+	ValidFrom      string
+	ExpireAt       string
 }
 
 // CreateServiceAccount creates a new service account
@@ -71,8 +79,11 @@ func (c *Client) GetServiceAccount(ctx context.Context, id string) (*ServiceAcco
 	return &ServiceAccount{
 		UUID:           firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
 		Name:           entry.GetString("name"),
+		SPN:            entry.GetString("spn"),
 		DisplayName:    entry.GetString("displayname"),
 		EntryManagedBy: entry.GetStringSlice("entry_managed_by"),
+		ValidFrom:      entry.GetString(serviceAccountAttrValidFrom),
+		ExpireAt:       entry.GetString(serviceAccountAttrExpireAt),
 		// Note: API tokens are not returned in GET responses
 	}, nil
 }
@@ -159,4 +170,44 @@ func (c *Client) GenerateServiceAccountToken(ctx context.Context, id, label stri
 	}
 
 	return result.Token, nil
+}
+
+func (c *Client) SetServiceAccountValidFrom(ctx context.Context, id, validFrom string) error {
+	resp, err := c.doRequest(ctx, "PUT", "/v1/service_account/"+id+"/_attr/"+serviceAccountAttrValidFrom, []string{validFrom})
+	if err != nil {
+		return fmt.Errorf("set service account valid_from: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) ClearServiceAccountValidFrom(ctx context.Context, id string) error {
+	resp, err := c.doRequest(ctx, "DELETE", "/v1/service_account/"+id+"/_attr/"+serviceAccountAttrValidFrom, nil)
+	if err != nil {
+		return fmt.Errorf("clear service account valid_from: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) SetServiceAccountExpireAt(ctx context.Context, id, expireAt string) error {
+	resp, err := c.doRequest(ctx, "PUT", "/v1/service_account/"+id+"/_attr/"+serviceAccountAttrExpireAt, []string{expireAt})
+	if err != nil {
+		return fmt.Errorf("set service account expire_at: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+func (c *Client) ClearServiceAccountExpireAt(ctx context.Context, id string) error {
+	resp, err := c.doRequest(ctx, "DELETE", "/v1/service_account/"+id+"/_attr/"+serviceAccountAttrExpireAt, nil)
+	if err != nil {
+		return fmt.Errorf("clear service account expire_at: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
 }

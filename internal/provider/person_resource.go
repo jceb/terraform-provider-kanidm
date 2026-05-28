@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -40,6 +41,8 @@ type personResourceModel struct {
 	ID                                  types.String `tfsdk:"id"`
 	DisplayName                         types.String `tfsdk:"displayname"`
 	LegalName                           types.String `tfsdk:"legalname"`
+	ValidFrom                           types.String `tfsdk:"valid_from"`
+	ExpireAt                            types.String `tfsdk:"expire_at"`
 	NameManagement                      types.String `tfsdk:"name_management"`
 	DisplayManagement                   types.String `tfsdk:"display_management"`
 	LegalNameManagement                 types.String `tfsdk:"legalname_management"`
@@ -125,6 +128,14 @@ The user can then visit the Kanidm web UI with the token to set up passkeys or p
 				MarkdownDescription: "How Terraform manages `legalname`. Valid values: `managed`, `initial`.",
 				Optional:            true,
 			},
+			"valid_from": schema.StringAttribute{
+				MarkdownDescription: "Earliest RFC3339 time when the person can authenticate. Use `null` to leave unset.",
+				Optional:            true,
+			},
+			"expire_at": schema.StringAttribute{
+				MarkdownDescription: "RFC3339 time when the person account expires. Use `null` to leave unset.",
+				Optional:            true,
+			},
 			"mail": schema.ListAttribute{
 				MarkdownDescription: "Email addresses for the person.",
 				Optional:            true,
@@ -181,6 +192,16 @@ func validateLegalName(value types.String) error {
 	return nil
 }
 
+func validateRFC3339Optional(attrName string, value types.String) error {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, value.ValueString()); err != nil {
+		return errors.New(attrName + " must be a valid RFC3339 timestamp")
+	}
+	return nil
+}
+
 func (r *personResource) resolveManagementModes(plan personResourceModel) (string, string, string, bool, bool, bool, error) {
 	nameMode, diags := resolveManagementMode(plan.NameManagement, r.personDefaults.Name, "name_management")
 	if diags.HasError() {
@@ -208,6 +229,16 @@ func (r *personResource) applyPersonState(ctx context.Context, model *personReso
 		model.LegalName = types.StringValue(person.LegalName)
 	} else {
 		model.LegalName = types.StringNull()
+	}
+	if person.ValidFrom != "" {
+		model.ValidFrom = types.StringValue(person.ValidFrom)
+	} else {
+		model.ValidFrom = types.StringNull()
+	}
+	if person.ExpireAt != "" {
+		model.ExpireAt = types.StringValue(person.ExpireAt)
+	} else {
+		model.ExpireAt = types.StringNull()
 	}
 
 	if len(person.Mail) > 0 {
@@ -298,6 +329,14 @@ func (r *personResource) Create(ctx context.Context, req resource.CreateRequest,
 		resp.Diagnostics.AddError("Invalid legalname", err.Error())
 		return
 	}
+	if err := validateRFC3339Optional("valid_from", plan.ValidFrom); err != nil {
+		resp.Diagnostics.AddError("Invalid valid_from", err.Error())
+		return
+	}
+	if err := validateRFC3339Optional("expire_at", plan.ExpireAt); err != nil {
+		resp.Diagnostics.AddError("Invalid expire_at", err.Error())
+		return
+	}
 
 	if _, _, _, _, _, _, err := r.resolveManagementModes(plan); err != nil {
 		resp.Diagnostics.AddError(
@@ -373,6 +412,24 @@ func (r *personResource) Create(ctx context.Context, req resource.CreateRequest,
 			resp.Diagnostics.AddError(
 				"Error Updating Legal Name",
 				"Person was created but legal name could not be set: "+err.Error(),
+			)
+			return
+		}
+	}
+	if !plan.ValidFrom.IsNull() && !plan.ValidFrom.IsUnknown() {
+		if err := r.client.SetPersonValidFrom(ctx, person.Name, plan.ValidFrom.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error Updating Valid From",
+				"Person was created but valid_from could not be set: "+err.Error(),
+			)
+			return
+		}
+	}
+	if !plan.ExpireAt.IsNull() && !plan.ExpireAt.IsUnknown() {
+		if err := r.client.SetPersonExpireAt(ctx, person.Name, plan.ExpireAt.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error Updating Expire At",
+				"Person was created but expire_at could not be set: "+err.Error(),
 			)
 			return
 		}
@@ -505,6 +562,14 @@ func (r *personResource) Update(ctx context.Context, req resource.UpdateRequest,
 		resp.Diagnostics.AddError("Invalid legalname", err.Error())
 		return
 	}
+	if err := validateRFC3339Optional("valid_from", plan.ValidFrom); err != nil {
+		resp.Diagnostics.AddError("Invalid valid_from", err.Error())
+		return
+	}
+	if err := validateRFC3339Optional("expire_at", plan.ExpireAt); err != nil {
+		resp.Diagnostics.AddError("Invalid expire_at", err.Error())
+		return
+	}
 
 	_, _, legalNameMode, manageName, manageDisplay, manageLegalName, err := r.resolveManagementModes(plan)
 	if err != nil {
@@ -563,6 +628,33 @@ func (r *personResource) Update(ctx context.Context, req resource.UpdateRequest,
 					"Error Updating Legal Name",
 					"Could not update legal name: "+err.Error(),
 				)
+				return
+			}
+		}
+	}
+
+	if !plan.ValidFrom.Equal(state.ValidFrom) {
+		if plan.ValidFrom.IsNull() {
+			if err := r.client.ClearPersonValidFrom(ctx, state.ID.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Clearing Valid From", "Could not clear valid_from: "+err.Error())
+				return
+			}
+		} else if !plan.ValidFrom.IsUnknown() {
+			if err := r.client.SetPersonValidFrom(ctx, state.ID.ValueString(), plan.ValidFrom.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Updating Valid From", "Could not update valid_from: "+err.Error())
+				return
+			}
+		}
+	}
+	if !plan.ExpireAt.Equal(state.ExpireAt) {
+		if plan.ExpireAt.IsNull() {
+			if err := r.client.ClearPersonExpireAt(ctx, state.ID.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Clearing Expire At", "Could not clear expire_at: "+err.Error())
+				return
+			}
+		} else if !plan.ExpireAt.IsUnknown() {
+			if err := r.client.SetPersonExpireAt(ctx, state.ID.ValueString(), plan.ExpireAt.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Updating Expire At", "Could not update expire_at: "+err.Error())
 				return
 			}
 		}

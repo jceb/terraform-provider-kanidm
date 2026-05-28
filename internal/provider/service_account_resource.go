@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -17,6 +18,7 @@ import (
 var (
 	_ resource.Resource                = (*serviceAccountResource)(nil)
 	_ resource.ResourceWithImportState = (*serviceAccountResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*serviceAccountResource)(nil)
 )
 
 func NewServiceAccountResource() resource.Resource {
@@ -33,6 +35,8 @@ type serviceAccountResourceModel struct {
 	DisplayName    types.String `tfsdk:"displayname"`
 	APIToken       types.String `tfsdk:"api_token"`
 	EntryManagedBy types.Set    `tfsdk:"entry_managed_by"`
+	ValidFrom      types.String `tfsdk:"valid_from"`
+	ExpireAt       types.String `tfsdk:"expire_at"`
 }
 
 func (r *serviceAccountResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -96,8 +100,26 @@ Store it securely immediately after creation.`,
 				Required:    true,
 				ElementType: types.StringType,
 			},
+			"valid_from": schema.StringAttribute{
+				MarkdownDescription: "Earliest RFC3339 time when the service account can authenticate. Use `null` to leave unset.",
+				Optional:            true,
+			},
+			"expire_at": schema.StringAttribute{
+				MarkdownDescription: "RFC3339 time when the service account expires. Use `null` to leave unset.",
+				Optional:            true,
+			},
 		},
 	}
+}
+
+func validateServiceAccountTimestamp(attrName string, value types.String) error {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, value.ValueString()); err != nil {
+		return errors.New(attrName + " must be a valid RFC3339 timestamp")
+	}
+	return nil
 }
 
 func (r *serviceAccountResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -109,6 +131,141 @@ func (r *serviceAccountResource) Configure(_ context.Context, req resource.Confi
 	r.client = data.client
 }
 
+func (r *serviceAccountResource) resolveManagerSPN(ctx context.Context, identifier string) (string, error) {
+	if identifier == "" {
+		return "", nil
+	}
+	if person, err := r.client.GetPerson(ctx, identifier); err == nil {
+		if person.SPN != "" {
+			return person.SPN, nil
+		}
+		if person.Name != "" {
+			return person.Name, nil
+		}
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	}
+	if serviceAccount, err := r.client.GetServiceAccount(ctx, identifier); err == nil {
+		if serviceAccount.SPN != "" {
+			return serviceAccount.SPN, nil
+		}
+		if serviceAccount.Name != "" {
+			return serviceAccount.Name, nil
+		}
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	}
+	if group, err := r.client.GetGroup(ctx, identifier); err == nil {
+		if group.SPN != "" {
+			return group.SPN, nil
+		}
+		if group.Name != "" {
+			return group.Name, nil
+		}
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	}
+	return "", client.ErrNotFound
+}
+
+func (r *serviceAccountResource) resolveManagerUUID(ctx context.Context, identifier string) (string, error) {
+	if identifier == "" {
+		return "", nil
+	}
+	if person, err := r.client.GetPerson(ctx, identifier); err == nil {
+		if person.UUID != "" {
+			return person.UUID, nil
+		}
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	}
+	if serviceAccount, err := r.client.GetServiceAccount(ctx, identifier); err == nil {
+		if serviceAccount.UUID != "" {
+			return serviceAccount.UUID, nil
+		}
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	}
+	if group, err := r.client.GetGroup(ctx, identifier); err == nil {
+		if group.UUID != "" {
+			return group.UUID, nil
+		}
+	} else if !errors.Is(err, client.ErrNotFound) {
+		return "", err
+	}
+	return "", client.ErrNotFound
+}
+
+func (r *serviceAccountResource) normalizeEntryManagedBy(ctx context.Context, managers []string) ([]string, error) {
+	if len(managers) == 0 {
+		return []string{}, nil
+	}
+	normalized := make([]string, 0, len(managers))
+	for _, manager := range managers {
+		uuid, err := r.resolveManagerUUID(ctx, manager)
+		if err == nil {
+			normalized = append(normalized, uuid)
+			continue
+		}
+		if errors.Is(err, client.ErrNotFound) {
+			normalized = append(normalized, manager)
+			continue
+		}
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func (r *serviceAccountResource) resolveEntryManagedBySPNs(ctx context.Context, managers []string) ([]string, error) {
+	if len(managers) == 0 {
+		return []string{}, nil
+	}
+	resolved := make([]string, 0, len(managers))
+	for _, manager := range managers {
+		spn, err := r.resolveManagerSPN(ctx, manager)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, spn)
+	}
+	return resolved, nil
+}
+
+func (r *serviceAccountResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan serviceAccountResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
+		var managers []string
+		resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &managers, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		normalized, err := r.normalizeEntryManagedBy(ctx, managers)
+		if err != nil {
+			resp.Diagnostics.AddError("Error Normalizing entry_managed_by", err.Error())
+			return
+		}
+		managedBySet, diags := types.SetValueFrom(ctx, types.StringType, normalized)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("entry_managed_by"), managedBySet)...)
+	}
+}
+
 func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, model *serviceAccountResourceModel, sa *client.ServiceAccount) error {
 	if sa.UUID == "" {
 		return errors.New("Kanidm did not return a UUID for the requested service account")
@@ -118,14 +275,28 @@ func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, m
 	model.Name = types.StringValue(sa.Name)
 	model.DisplayName = types.StringValue(sa.DisplayName)
 
-	if len(sa.EntryManagedBy) > 0 {
-		embySet, diags := types.SetValueFrom(ctx, types.StringType, sa.EntryManagedBy)
+	normalizedManagers, err := r.normalizeEntryManagedBy(ctx, sa.EntryManagedBy)
+	if err != nil {
+		return err
+	}
+	if len(normalizedManagers) > 0 {
+		embySet, diags := types.SetValueFrom(ctx, types.StringType, normalizedManagers)
 		if diags.HasError() {
 			return errors.New(diags.Errors()[0].Summary())
 		}
 		model.EntryManagedBy = embySet
 	} else {
 		model.EntryManagedBy = types.SetNull(types.StringType)
+	}
+	if sa.ValidFrom != "" {
+		model.ValidFrom = types.StringValue(sa.ValidFrom)
+	} else {
+		model.ValidFrom = types.StringNull()
+	}
+	if sa.ExpireAt != "" {
+		model.ExpireAt = types.StringValue(sa.ExpireAt)
+	} else {
+		model.ExpireAt = types.StringNull()
 	}
 
 	return nil
@@ -137,6 +308,14 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := validateServiceAccountTimestamp("valid_from", plan.ValidFrom); err != nil {
+		resp.Diagnostics.AddError("Invalid valid_from", err.Error())
+		return
+	}
+	if err := validateServiceAccountTimestamp("expire_at", plan.ExpireAt); err != nil {
+		resp.Diagnostics.AddError("Invalid expire_at", err.Error())
+		return
+	}
 
 	tflog.Debug(ctx, "Creating service account", map[string]any{
 		"name":        plan.Name.ValueString(),
@@ -145,8 +324,14 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 
 	// Extract entry_managed_by (required)
 	var entryManagedBy []string
+	var err error
 	resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &entryManagedBy, false)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	entryManagedBy, err = r.resolveEntryManagedBySPNs(ctx, entryManagedBy)
+	if err != nil {
+		resp.Diagnostics.AddError("Error Resolving entry_managed_by", err.Error())
 		return
 	}
 
@@ -161,6 +346,18 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 	}
 
 	plan.APIToken = types.StringValue(sa.APIToken)
+	if !plan.ValidFrom.IsNull() && !plan.ValidFrom.IsUnknown() {
+		if err := r.client.SetServiceAccountValidFrom(ctx, sa.Name, plan.ValidFrom.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error Updating Valid From", "Service account was created but valid_from could not be set: "+err.Error())
+			return
+		}
+	}
+	if !plan.ExpireAt.IsNull() && !plan.ExpireAt.IsUnknown() {
+		if err := r.client.SetServiceAccountExpireAt(ctx, sa.Name, plan.ExpireAt.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error Updating Expire At", "Service account was created but expire_at could not be set: "+err.Error())
+			return
+		}
+	}
 
 	createdSA, err := r.client.GetServiceAccount(ctx, sa.Name)
 	if err != nil {
@@ -242,6 +439,7 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 	tflog.Debug(ctx, "Updating service account", map[string]any{
 		"id": state.ID.ValueString(),
 	})
+	var err error
 
 	// Check if entry_managed_by has changed
 	var entryManagedBy []string
@@ -250,6 +448,11 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 		if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
 			resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &entryManagedBy, false)...)
 			if resp.Diagnostics.HasError() {
+				return
+			}
+			entryManagedBy, err = r.resolveEntryManagedBySPNs(ctx, entryManagedBy)
+			if err != nil {
+				resp.Diagnostics.AddError("Error Resolving entry_managed_by", err.Error())
 				return
 			}
 		} else {
@@ -308,6 +511,32 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 				"Could not update service account: "+err.Error(),
 			)
 			return
+		}
+	}
+	if !plan.ValidFrom.Equal(state.ValidFrom) {
+		if plan.ValidFrom.IsNull() {
+			if err := r.client.ClearServiceAccountValidFrom(ctx, state.ID.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Clearing Valid From", "Could not clear valid_from: "+err.Error())
+				return
+			}
+		} else if !plan.ValidFrom.IsUnknown() {
+			if err := r.client.SetServiceAccountValidFrom(ctx, state.ID.ValueString(), plan.ValidFrom.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Updating Valid From", "Could not update valid_from: "+err.Error())
+				return
+			}
+		}
+	}
+	if !plan.ExpireAt.Equal(state.ExpireAt) {
+		if plan.ExpireAt.IsNull() {
+			if err := r.client.ClearServiceAccountExpireAt(ctx, state.ID.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Clearing Expire At", "Could not clear expire_at: "+err.Error())
+				return
+			}
+		} else if !plan.ExpireAt.IsUnknown() {
+			if err := r.client.SetServiceAccountExpireAt(ctx, state.ID.ValueString(), plan.ExpireAt.ValueString()); err != nil {
+				resp.Diagnostics.AddError("Error Updating Expire At", "Could not update expire_at: "+err.Error())
+				return
+			}
 		}
 	}
 
