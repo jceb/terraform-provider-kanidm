@@ -9,6 +9,7 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  artifact-metadata: write
 
 jobs:
   goreleaser:
@@ -38,7 +39,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
+      - name: Determine version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
       - name: Attest build provenance
-        uses: actions/attest@v2
+        uses: actions/attest@v4
         with:
-          subject-checksums: ./dist/terraform-provider-kanidm_${{ github.ref_name }}_SHA256SUMS
+          subject-checksums: ./dist/terraform-provider-kanidm_${{ steps.version.outputs.VERSION }}_SHA256SUMS
