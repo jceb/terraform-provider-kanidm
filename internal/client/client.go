@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,21 @@ func WithHTTPClient(client *http.Client) ClientOption {
 func WithTimeout(timeout time.Duration) ClientOption {
 	return func(c *Client) {
 		c.httpClient.Timeout = timeout
+	}
+}
+
+// WithInsecureSkipVerify disables TLS certificate verification.
+func WithInsecureSkipVerify() ClientOption {
+	return func(c *Client) {
+		transport, ok := c.httpClient.Transport.(*http.Transport)
+		if !ok || transport == nil {
+			transport = http.DefaultTransport.(*http.Transport).Clone()
+		}
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
+		c.httpClient.Transport = transport
 	}
 }
 
@@ -223,6 +239,41 @@ func (e *Entry) GetInt64(key string) (int64, bool) {
 	}
 
 	return 0, false
+}
+
+// GetBool retrieves a boolean-like attribute.
+func (e *Entry) GetBool(key string) (bool, bool) {
+	val, ok := e.Attrs[key]
+	if !ok {
+		return false, false
+	}
+
+	parse := func(raw string) (bool, bool) {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return false, false
+		}
+		return parsed, true
+	}
+
+	switch v := val.(type) {
+	case bool:
+		return v, true
+	case string:
+		return parse(v)
+	case []any:
+		if len(v) == 0 {
+			return false, false
+		}
+		switch first := v[0].(type) {
+		case bool:
+			return first, true
+		case string:
+			return parse(first)
+		}
+	}
+
+	return false, false
 }
 
 // CreateRequest represents a resource creation request
