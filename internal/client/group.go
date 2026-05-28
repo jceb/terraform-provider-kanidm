@@ -11,6 +11,7 @@ type Group struct {
 	Name        string
 	SPN         string
 	Description string
+	EntryManagedBy []string
 	Members     []string
 }
 
@@ -61,12 +62,13 @@ func (c *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
 		Name:        entry.GetString("name"),
 		SPN:         entry.GetString("spn"),
 		Description: entry.GetString("description"),
+		EntryManagedBy: entry.GetStringSlice("entry_managed_by"),
 		Members:     members,
 	}, nil
 }
 
 // UpdateGroup updates a group
-func (c *Client) UpdateGroup(ctx context.Context, id string, name *string, description *string, members []string) error {
+func (c *Client) UpdateGroup(ctx context.Context, id string, name *string, description *string, entryManagedBy []string, members []string) error {
 	attrs := make(map[string]any)
 
 	if name != nil {
@@ -75,6 +77,10 @@ func (c *Client) UpdateGroup(ctx context.Context, id string, name *string, descr
 
 	if description != nil {
 		attrs["description"] = []string{*description}
+	}
+
+	if entryManagedBy != nil {
+		attrs["entry_managed_by"] = entryManagedBy
 	}
 
 	if members != nil {
