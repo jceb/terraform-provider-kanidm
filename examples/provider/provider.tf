@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     kanidm = {
-      source = "ssoriche/kanidm"
+      source = "seanlatimer/kanidm"
     }
   }
 }
@@ -21,7 +21,7 @@ provider "kanidm" {}
 terraform {
   required_providers {
     kanidm = {
-      source = "ssoriche/kanidm"
+      source = "seanlatimer/kanidm"
     }
     onepassword = {
       source  = "1Password/onepassword"

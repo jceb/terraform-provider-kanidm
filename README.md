@@ -3,7 +3,7 @@
 The official Terraform provider for [Kanidm](https://kanidm.com), enabling Infrastructure-as-Code management of identity and access resources.
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
-[![Go Report Card](https://goreportcard.com/badge/github.com/ssoriche/terraform-provider-kanidm)](https://goreportcard.com/report/github.com/ssoriche/terraform-provider-kanidm)
+[![Go Report Card](https://goreportcard.com/badge/github.com/seanlatimer/terraform-provider-kanidm)](https://goreportcard.com/report/github.com/seanlatimer/terraform-provider-kanidm)
 
 ## Features
 
@@ -26,7 +26,7 @@ The official Terraform provider for [Kanidm](https://kanidm.com), enabling Infra
 terraform {
   required_providers {
     kanidm = {
-      source = "ssoriche/kanidm"
+      source = "seanlatimer/kanidm"
       version = "~> 0.1"
     }
   }
@@ -41,7 +41,7 @@ provider "kanidm" {
 ### Local Development
 
 ```bash
-git clone https://github.com/ssoriche/terraform-provider-kanidm
+git clone https://github.com/seanlatimer/terraform-provider-kanidm
 cd terraform-provider-kanidm
 go build -o terraform-provider-kanidm
 ```
@@ -147,7 +147,7 @@ export KANIDM_TOKEN="your-api-token"
 terraform {
   required_providers {
     kanidm = {
-      source = "ssoriche/kanidm"
+      source = "seanlatimer/kanidm"
     }
     onepassword = {
       source  = "1Password/onepassword"
@@ -279,7 +279,7 @@ This project is licensed under the Mozilla Public License 2.0 - see the [LICENSE
 
 ## Support
 
-- GitHub Issues: [https://github.com/ssoriche/terraform-provider-kanidm/issues](https://github.com/ssoriche/terraform-provider-kanidm/issues)
+- GitHub Issues: [https://github.com/seanlatimer/terraform-provider-kanidm/issues](https://github.com/seanlatimer/terraform-provider-kanidm/issues)
 - Kanidm Documentation: [https://kanidm.github.io/kanidm/stable/](https://kanidm.github.io/kanidm/stable/)
 
 ---

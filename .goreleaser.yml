@@ -76,11 +76,11 @@ release:
     
     **Release Date:** {{ .Date }}
     
-    For usage instructions, see the [README](https://github.com/ssoriche/terraform-provider-kanidm#readme).
+    For usage instructions, see the [README](https://github.com/seanlatimer/terraform-provider-kanidm#readme).
   footer: |
     ## Installation
     
-    This release is published to the [Terraform Registry](https://registry.terraform.io/providers/ssoriche/kanidm).
+    This release is published to the [Terraform Registry](https://registry.terraform.io/providers/seanlatimer/kanidm).
     
     To use this provider:
     
@@ -88,7 +88,7 @@ release:
     terraform {
       required_providers {
         kanidm = {
-          source  = "ssoriche/kanidm"
+          source  = "seanlatimer/kanidm"
           version = "~> {{ .Major }}.{{ .Minor }}"
         }
       }
