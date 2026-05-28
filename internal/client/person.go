@@ -10,6 +10,7 @@ type Person struct {
 	UUID        string
 	Name        string
 	DisplayName string
+	LegalName   string
 	Mail        []string
 }
 
@@ -49,6 +50,7 @@ func (c *Client) GetPerson(ctx context.Context, id string) (*Person, error) {
 		UUID:        firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
 		Name:        entry.GetString("name"),
 		DisplayName: entry.GetString("displayname"),
+		LegalName:   entry.GetString("legalname"),
 		Mail:        entry.GetStringSlice("mail"),
 	}, nil
 }
@@ -74,6 +76,28 @@ func (c *Client) UpdatePerson(ctx context.Context, id string, name *string, disp
 	resp, err := c.doRequest(ctx, "PATCH", "/v1/person/"+id, req)
 	if err != nil {
 		return fmt.Errorf("update person: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+// SetPersonLegalName sets the legal name for a person account.
+func (c *Client) SetPersonLegalName(ctx context.Context, id, legalName string) error {
+	resp, err := c.doRequest(ctx, "PUT", "/v1/person/"+id+"/_attr/legalname", []string{legalName})
+	if err != nil {
+		return fmt.Errorf("set person legal name: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
+}
+
+// ClearPersonLegalName clears the legal name for a person account.
+func (c *Client) ClearPersonLegalName(ctx context.Context, id string) error {
+	resp, err := c.doRequest(ctx, "DELETE", "/v1/person/"+id+"/_attr/legalname", nil)
+	if err != nil {
+		return fmt.Errorf("clear person legal name: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

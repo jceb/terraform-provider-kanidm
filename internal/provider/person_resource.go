@@ -39,8 +39,10 @@ type personResourceModel struct {
 	Name                                types.String `tfsdk:"name"`
 	ID                                  types.String `tfsdk:"id"`
 	DisplayName                         types.String `tfsdk:"displayname"`
+	LegalName                           types.String `tfsdk:"legalname"`
 	NameManagement                      types.String `tfsdk:"name_management"`
 	DisplayManagement                   types.String `tfsdk:"display_management"`
+	LegalNameManagement                 types.String `tfsdk:"legalname_management"`
 	Mail                                types.List   `tfsdk:"mail"`
 	Password                            types.String `tfsdk:"password"`
 	GenerateInitialCredentialResetToken types.Bool   `tfsdk:"generate_initial_credential_reset_token"`
@@ -115,6 +117,14 @@ The user can then visit the Kanidm web UI with the token to set up passkeys or p
 				MarkdownDescription: "How Terraform manages `displayname`. Valid values: `managed`, `initial`.",
 				Optional:            true,
 			},
+			"legalname": schema.StringAttribute{
+				MarkdownDescription: "Legal name of the person. Use `null` to leave it unset or clear it when managed.",
+				Optional:            true,
+			},
+			"legalname_management": schema.StringAttribute{
+				MarkdownDescription: "How Terraform manages `legalname`. Valid values: `managed`, `initial`.",
+				Optional:            true,
+			},
 			"mail": schema.ListAttribute{
 				MarkdownDescription: "Email addresses for the person.",
 				Optional:            true,
@@ -164,24 +174,41 @@ func (r *personResource) Configure(_ context.Context, req resource.ConfigureRequ
 	r.personDefaults = data.personDefaults
 }
 
-func (r *personResource) resolveManagementModes(plan personResourceModel) (string, string, bool, bool, error) {
+func validateLegalName(value types.String) error {
+	if !value.IsNull() && !value.IsUnknown() && value.ValueString() == "" {
+		return errors.New("legalname cannot be an empty string; use null to leave it unset or clear it")
+	}
+	return nil
+}
+
+func (r *personResource) resolveManagementModes(plan personResourceModel) (string, string, string, bool, bool, bool, error) {
 	nameMode, diags := resolveManagementMode(plan.NameManagement, r.personDefaults.Name, "name_management")
 	if diags.HasError() {
-		return "", "", false, false, errors.New(diags[0].Summary())
+		return "", "", "", false, false, false, errors.New(diags[0].Summary())
 	}
 
 	displayMode, diags := resolveManagementMode(plan.DisplayManagement, r.personDefaults.Display, "display_management")
 	if diags.HasError() {
-		return "", "", false, false, errors.New(diags[0].Summary())
+		return "", "", "", false, false, false, errors.New(diags[0].Summary())
 	}
 
-	return nameMode, displayMode, nameMode == managementModeManaged, displayMode == managementModeManaged, nil
+	legalNameMode, diags := resolveManagementMode(plan.LegalNameManagement, r.personDefaults.LegalName, "legalname_management")
+	if diags.HasError() {
+		return "", "", "", false, false, false, errors.New(diags[0].Summary())
+	}
+
+	return nameMode, displayMode, legalNameMode, nameMode == managementModeManaged, displayMode == managementModeManaged, legalNameMode == managementModeManaged, nil
 }
 
 func (r *personResource) applyPersonState(ctx context.Context, model *personResourceModel, person *client.Person) error {
 	model.ID = types.StringValue(person.UUID)
 	model.Name = types.StringValue(person.Name)
 	model.DisplayName = types.StringValue(person.DisplayName)
+	if person.LegalName != "" {
+		model.LegalName = types.StringValue(person.LegalName)
+	} else {
+		model.LegalName = types.StringNull()
+	}
 
 	if len(person.Mail) > 0 {
 		mailList, diags := types.ListValueFrom(ctx, types.StringType, person.Mail)
@@ -213,6 +240,8 @@ func (r *personResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 	resp.Diagnostics.Append(diags...)
 	displayMode, diags := resolveManagementMode(plan.DisplayManagement, r.personDefaults.Display, "display_management")
 	resp.Diagnostics.Append(diags...)
+	legalNameMode, diags := resolveManagementMode(plan.LegalNameManagement, r.personDefaults.LegalName, "legalname_management")
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -223,6 +252,10 @@ func (r *personResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 
 	if displayMode == managementModeInitial && !state.DisplayName.IsNull() && !state.DisplayName.IsUnknown() {
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("displayname"), state.DisplayName)...)
+	}
+
+	if legalNameMode == managementModeInitial && !state.LegalName.IsNull() && !state.LegalName.IsUnknown() {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("legalname"), state.LegalName)...)
 	}
 
 	if !state.GenerateInitialCredentialResetToken.IsNull() && !state.GenerateInitialCredentialResetToken.IsUnknown() {
@@ -261,7 +294,12 @@ func (r *personResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	if _, _, _, _, err := r.resolveManagementModes(plan); err != nil {
+	if err := validateLegalName(plan.LegalName); err != nil {
+		resp.Diagnostics.AddError("Invalid legalname", err.Error())
+		return
+	}
+
+	if _, _, _, _, _, _, err := r.resolveManagementModes(plan); err != nil {
 		resp.Diagnostics.AddError(
 			"Invalid person management mode",
 			err.Error(),
@@ -327,6 +365,16 @@ func (r *personResource) Create(ctx context.Context, req resource.CreateRequest,
 				)
 				return
 			}
+		}
+	}
+
+	if !plan.LegalName.IsNull() && !plan.LegalName.IsUnknown() {
+		if err := r.client.SetPersonLegalName(ctx, person.Name, plan.LegalName.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error Updating Legal Name",
+				"Person was created but legal name could not be set: "+err.Error(),
+			)
+			return
 		}
 	}
 
@@ -453,7 +501,12 @@ func (r *personResource) Update(ctx context.Context, req resource.UpdateRequest,
 		"id": state.ID.ValueString(),
 	})
 
-	_, _, manageName, manageDisplay, err := r.resolveManagementModes(plan)
+	if err := validateLegalName(plan.LegalName); err != nil {
+		resp.Diagnostics.AddError("Invalid legalname", err.Error())
+		return
+	}
+
+	_, _, legalNameMode, manageName, manageDisplay, manageLegalName, err := r.resolveManagementModes(plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Invalid person management mode",
@@ -492,6 +545,26 @@ func (r *personResource) Update(ctx context.Context, req resource.UpdateRequest,
 				"Could not update person: "+err.Error(),
 			)
 			return
+		}
+	}
+
+	if manageLegalName || (legalNameMode == managementModeInitial && state.LegalName.IsNull() && !plan.LegalName.IsNull() && !plan.LegalName.IsUnknown()) {
+		if plan.LegalName.IsNull() {
+			if err := r.client.ClearPersonLegalName(ctx, state.ID.ValueString()); err != nil {
+				resp.Diagnostics.AddError(
+					"Error Clearing Legal Name",
+					"Could not clear legal name: "+err.Error(),
+				)
+				return
+			}
+		} else if !plan.LegalName.IsUnknown() && !plan.LegalName.Equal(state.LegalName) {
+			if err := r.client.SetPersonLegalName(ctx, state.ID.ValueString(), plan.LegalName.ValueString()); err != nil {
+				resp.Diagnostics.AddError(
+					"Error Updating Legal Name",
+					"Could not update legal name: "+err.Error(),
+				)
+				return
+			}
 		}
 	}
 

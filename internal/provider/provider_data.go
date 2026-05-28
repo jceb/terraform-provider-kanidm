@@ -15,6 +15,7 @@ const (
 type personDefaultsModel struct {
 	NameManagement                      types.String `tfsdk:"name_management"`
 	DisplayManagement                   types.String `tfsdk:"display_management"`
+	LegalNameManagement                 types.String `tfsdk:"legalname_management"`
 	GenerateInitialCredentialResetToken types.Bool   `tfsdk:"generate_initial_credential_reset_token"`
 	InitialCredentialResetTokenTTL      types.Int64  `tfsdk:"initial_credential_reset_token_ttl"`
 }
@@ -27,6 +28,7 @@ type providerData struct {
 type personManagementDefaults struct {
 	Name                        string
 	Display                     string
+	LegalName                   string
 	GenerateInitialResetToken   bool
 	InitialResetTokenTTLSeconds int64
 }

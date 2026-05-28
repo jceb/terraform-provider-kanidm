@@ -70,6 +70,10 @@ func (p *kanidmProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 						Description: "Default management mode for person display names. Valid values: `managed`, `initial`.",
 						Optional:    true,
 					},
+					"legalname_management": schema.StringAttribute{
+						Description: "Default management mode for person legal names. Valid values: `managed`, `initial`.",
+						Optional:    true,
+					},
 					"generate_initial_credential_reset_token": schema.BoolAttribute{
 						Description: "Whether person resources should create an initial credential reset token during creation by default.",
 						Optional:    true,
@@ -139,6 +143,7 @@ func (p *kanidmProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	personDefaults := personManagementDefaults{
 		Name:                        managementModeInitial,
 		Display:                     managementModeManaged,
+		LegalName:                   managementModeInitial,
 		GenerateInitialResetToken:   false,
 		InitialResetTokenTTLSeconds: 3600,
 	}
@@ -148,6 +153,8 @@ func (p *kanidmProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		resp.Diagnostics.Append(diags...)
 		displayMode, diags := resolveManagementMode(config.PersonDefaults.DisplayManagement, personDefaults.Display, "person_defaults.display_management")
 		resp.Diagnostics.Append(diags...)
+		legalNameMode, diags := resolveManagementMode(config.PersonDefaults.LegalNameManagement, personDefaults.LegalName, "person_defaults.legalname_management")
+		resp.Diagnostics.Append(diags...)
 
 		if resp.Diagnostics.HasError() {
 			return
@@ -155,6 +162,7 @@ func (p *kanidmProvider) Configure(ctx context.Context, req provider.ConfigureRe
 
 		personDefaults.Name = nameMode
 		personDefaults.Display = displayMode
+		personDefaults.LegalName = legalNameMode
 
 		if !config.PersonDefaults.GenerateInitialCredentialResetToken.IsNull() && !config.PersonDefaults.GenerateInitialCredentialResetToken.IsUnknown() {
 			personDefaults.GenerateInitialResetToken = config.PersonDefaults.GenerateInitialCredentialResetToken.ValueBool()
