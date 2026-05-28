@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -21,17 +22,37 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*oauth2BasicResource)(nil)
-	_ resource.ResourceWithImportState = (*oauth2BasicResource)(nil)
-	_ resource.ResourceWithModifyPlan  = (*oauth2BasicResource)(nil)
+	_ resource.Resource                = (*oauth2ClientResource)(nil)
+	_ resource.ResourceWithImportState = (*oauth2ClientResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*oauth2ClientResource)(nil)
 )
 
 func NewOAuth2BasicResource() resource.Resource {
-	return &oauth2BasicResource{}
+	return &oauth2ClientResource{}
 }
 
-type oauth2BasicResource struct {
+
+func NewOAuth2PublicResource() resource.Resource {
+	return &oauth2ClientResource{public: true}
+}
+
+type oauth2ClientResource struct {
 	client *client.Client
+	public bool
+}
+
+type oauth2ResourceModel struct {
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	DisplayName  types.String `tfsdk:"displayname"`
+	Origin       types.String `tfsdk:"origin"`
+	RedirectURIs types.List   `tfsdk:"redirect_uris"`
+	ImagePath    types.String `tfsdk:"image_path"`
+	ImageSHA256  types.String `tfsdk:"image_sha256"`
+	ScopeMaps    types.Set    `tfsdk:"scope_map"`
+	SupScopeMaps types.Set    `tfsdk:"sup_scope_map"`
+	ClaimMaps    types.Set    `tfsdk:"claim_map"`
+	ClientSecret types.String
 }
 
 type oauth2BasicResourceModel struct {
@@ -48,6 +69,19 @@ type oauth2BasicResourceModel struct {
 	ClientSecret types.String `tfsdk:"client_secret"`
 }
 
+type oauth2PublicResourceModel struct {
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	DisplayName  types.String `tfsdk:"displayname"`
+	Origin       types.String `tfsdk:"origin"`
+	RedirectURIs types.List   `tfsdk:"redirect_uris"`
+	ImagePath    types.String `tfsdk:"image_path"`
+	ImageSHA256  types.String `tfsdk:"image_sha256"`
+	ScopeMaps    types.Set    `tfsdk:"scope_map"`
+	SupScopeMaps types.Set    `tfsdk:"sup_scope_map"`
+	ClaimMaps    types.Set    `tfsdk:"claim_map"`
+}
+
 type scopeMapModel struct {
 	Group  types.String `tfsdk:"group"`
 	Scopes types.List   `tfsdk:"scopes"`
@@ -58,6 +92,104 @@ type claimMapModel struct {
 	Group  types.String `tfsdk:"group"`
 	Values types.List   `tfsdk:"values"`
 	Join   types.String `tfsdk:"join"`
+}
+
+type stateGetter interface {
+	Get(context.Context, any) diag.Diagnostics
+}
+
+type stateSetter interface {
+	Set(context.Context, any) diag.Diagnostics
+}
+
+func resourceModelFromBasic(model oauth2BasicResourceModel) oauth2ResourceModel {
+	return oauth2ResourceModel{
+		ID:           model.ID,
+		Name:         model.Name,
+		DisplayName:  model.DisplayName,
+		Origin:       model.Origin,
+		RedirectURIs: model.RedirectURIs,
+		ImagePath:    model.ImagePath,
+		ImageSHA256:  model.ImageSHA256,
+		ScopeMaps:    model.ScopeMaps,
+		SupScopeMaps: model.SupScopeMaps,
+		ClaimMaps:    model.ClaimMaps,
+		ClientSecret: model.ClientSecret,
+	}
+}
+
+func resourceModelFromPublic(model oauth2PublicResourceModel) oauth2ResourceModel {
+	return oauth2ResourceModel{
+		ID:           model.ID,
+		Name:         model.Name,
+		DisplayName:  model.DisplayName,
+		Origin:       model.Origin,
+		RedirectURIs: model.RedirectURIs,
+		ImagePath:    model.ImagePath,
+		ImageSHA256:  model.ImageSHA256,
+		ScopeMaps:    model.ScopeMaps,
+		SupScopeMaps: model.SupScopeMaps,
+		ClaimMaps:    model.ClaimMaps,
+		ClientSecret: types.StringNull(),
+	}
+}
+
+func basicModelFromResource(model oauth2ResourceModel) oauth2BasicResourceModel {
+	return oauth2BasicResourceModel{
+		ID:           model.ID,
+		Name:         model.Name,
+		DisplayName:  model.DisplayName,
+		Origin:       model.Origin,
+		RedirectURIs: model.RedirectURIs,
+		ImagePath:    model.ImagePath,
+		ImageSHA256:  model.ImageSHA256,
+		ScopeMaps:    model.ScopeMaps,
+		SupScopeMaps: model.SupScopeMaps,
+		ClaimMaps:    model.ClaimMaps,
+		ClientSecret: model.ClientSecret,
+	}
+}
+
+func publicModelFromResource(model oauth2ResourceModel) oauth2PublicResourceModel {
+	return oauth2PublicResourceModel{
+		ID:           model.ID,
+		Name:         model.Name,
+		DisplayName:  model.DisplayName,
+		Origin:       model.Origin,
+		RedirectURIs: model.RedirectURIs,
+		ImagePath:    model.ImagePath,
+		ImageSHA256:  model.ImageSHA256,
+		ScopeMaps:    model.ScopeMaps,
+		SupScopeMaps: model.SupScopeMaps,
+		ClaimMaps:    model.ClaimMaps,
+	}
+}
+
+func (r *oauth2ClientResource) getResourceModel(ctx context.Context, getter stateGetter, model *oauth2ResourceModel) diag.Diagnostics {
+	if r.public {
+		var publicModel oauth2PublicResourceModel
+		diags := getter.Get(ctx, &publicModel)
+		if !diags.HasError() {
+			*model = resourceModelFromPublic(publicModel)
+		}
+		return diags
+	}
+	var basicModel oauth2BasicResourceModel
+	diags := getter.Get(ctx, &basicModel)
+	if !diags.HasError() {
+		*model = resourceModelFromBasic(basicModel)
+	}
+	return diags
+}
+
+func (r *oauth2ClientResource) setResourceModel(ctx context.Context, setter stateSetter, model *oauth2ResourceModel) diag.Diagnostics {
+	if r.public {
+		model.ClientSecret = types.StringNull()
+		publicModel := publicModelFromResource(*model)
+		return setter.Set(ctx, &publicModel)
+	}
+	basicModel := basicModelFromResource(*model)
+	return setter.Set(ctx, &basicModel)
 }
 
 func firstKnownString(values ...string) string {
@@ -78,58 +210,80 @@ func hashFileSHA256(filePath string) (string, error) {
 	return fmt.Sprintf("%x", sum[:]), nil
 }
 
-func (r *oauth2BasicResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_oauth2_basic"
+func (r *oauth2ClientResource) resourceTypeName() string {
+	if r.public {
+		return "oauth2_public"
+	}
+	return "oauth2_basic"
 }
 
-func (r *oauth2BasicResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	resp.Schema = schema.Schema{
-		MarkdownDescription: `Manages a Kanidm OAuth2 basic (confidential) client.`,
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				MarkdownDescription: "Stable Kanidm UUID for this OAuth2 client.",
-				Computed:            true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
-			"name": schema.StringAttribute{
-				MarkdownDescription: "OAuth2 client name (client ID).",
-				Required:            true,
-			},
-			"displayname": schema.StringAttribute{
-				MarkdownDescription: "Display name of the OAuth2 client.",
-				Required:            true,
-			},
-			"origin": schema.StringAttribute{
-				MarkdownDescription: "Origin URL where the OAuth2 client application is hosted.",
-				Required:            true,
-			},
-			"redirect_uris": schema.ListAttribute{
-				MarkdownDescription: "List of allowed redirect URIs for OAuth2 callbacks.",
-				Optional:            true,
-				ElementType:         types.StringType,
-			},
-			"image_path": schema.StringAttribute{
-				MarkdownDescription: "Optional local path to an image file to upload.",
-				Optional:            true,
-			},
-			"image_sha256": schema.StringAttribute{
-				MarkdownDescription: "SHA-256 hash of the local image file last applied.",
-				Computed:            true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
-			"client_secret": schema.StringAttribute{
-				MarkdownDescription: "Client secret for the OAuth2 basic client. Only available during creation.",
-				Computed:  true,
-				Sensitive: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
+func (r *oauth2ClientResource) resourceLabel() string {
+	if r.public {
+		return "OAuth2 Public Client"
+	}
+	return "OAuth2 Basic Client"
+}
+
+func (r *oauth2ClientResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_" + r.resourceTypeName()
+}
+
+
+func (r *oauth2ClientResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	description := "Manages a Kanidm OAuth2 basic (confidential) client."
+	if r.public {
+		description = "Manages a Kanidm OAuth2 public client."
+	}
+	attributes := map[string]schema.Attribute{
+		"id": schema.StringAttribute{
+			MarkdownDescription: "Stable Kanidm UUID for this OAuth2 client.",
+			Computed:            true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.UseStateForUnknown(),
 			},
 		},
+		"name": schema.StringAttribute{
+			MarkdownDescription: "OAuth2 client name (client ID).",
+			Required:            true,
+		},
+		"displayname": schema.StringAttribute{
+			MarkdownDescription: "Display name of the OAuth2 client.",
+			Required:            true,
+		},
+		"origin": schema.StringAttribute{
+			MarkdownDescription: "Origin URL where the OAuth2 client application is hosted.",
+			Required:            true,
+		},
+		"redirect_uris": schema.ListAttribute{
+			MarkdownDescription: "List of allowed redirect URIs for OAuth2 callbacks.",
+			Optional:            true,
+			ElementType:         types.StringType,
+		},
+		"image_path": schema.StringAttribute{
+			MarkdownDescription: "Optional local path to an image file to upload.",
+			Optional:            true,
+		},
+		"image_sha256": schema.StringAttribute{
+			MarkdownDescription: "SHA-256 hash of the local image file last applied.",
+			Computed:            true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.UseStateForUnknown(),
+			},
+		},
+	}
+	if !r.public {
+		attributes["client_secret"] = schema.StringAttribute{
+			MarkdownDescription: "Client secret for the OAuth2 basic client. Only available during creation.",
+			Computed:            true,
+			Sensitive:           true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.UseStateForUnknown(),
+			},
+		}
+	}
+	resp.Schema = schema.Schema{
+		MarkdownDescription: description,
+		Attributes:          attributes,
 		Blocks: map[string]schema.Block{
 			"scope_map": schema.SetNestedBlock{
 				MarkdownDescription: "Scope mappings that define which OAuth2 scopes are granted to members of specific groups.",
@@ -191,7 +345,7 @@ func (r *oauth2BasicResource) Schema(_ context.Context, _ resource.SchemaRequest
 	}
 }
 
-func (r *oauth2BasicResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+func (r *oauth2ClientResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	data := configureResource(req, resp)
 	if data == nil {
 		return
@@ -199,12 +353,12 @@ func (r *oauth2BasicResource) Configure(_ context.Context, req resource.Configur
 	r.client = data.client
 }
 
-func (r *oauth2BasicResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+func (r *oauth2ClientResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
 	}
-	var plan oauth2BasicResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	var plan oauth2ResourceModel
+	resp.Diagnostics.Append(r.getResourceModel(ctx, req.Plan, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -330,7 +484,7 @@ func (r *oauth2BasicResource) ModifyPlan(ctx context.Context, req resource.Modif
 	}
 }
 
-func (r *oauth2BasicResource) resolveGroupSPN(ctx context.Context, identifier string) (string, error) {
+func (r *oauth2ClientResource) resolveGroupSPN(ctx context.Context, identifier string) (string, error) {
 	if strings.Contains(identifier, "@") {
 		return identifier, nil
 	}
@@ -347,7 +501,7 @@ func (r *oauth2BasicResource) resolveGroupSPN(ctx context.Context, identifier st
 	return "", fmt.Errorf("group %q did not return a name or SPN", identifier)
 }
 
-func (r *oauth2BasicResource) resolveGroupUUID(ctx context.Context, identifier string) (string, error) {
+func (r *oauth2ClientResource) resolveGroupUUID(ctx context.Context, identifier string) (string, error) {
 	group, err := r.client.GetGroup(ctx, identifier)
 	if err != nil {
 		return "", fmt.Errorf("resolve group %q: %w", identifier, err)
@@ -358,7 +512,7 @@ func (r *oauth2BasicResource) resolveGroupUUID(ctx context.Context, identifier s
 	return group.UUID, nil
 }
 
-func (r *oauth2BasicResource) applyOAuth2BasicState(ctx context.Context, model *oauth2BasicResourceModel, oauth2Client *client.OAuth2Client) error {
+func (r *oauth2ClientResource) applyOAuth2BasicState(ctx context.Context, model *oauth2ResourceModel, oauth2Client *client.OAuth2Client) error {
 	if oauth2Client.UUID == "" {
 		return errors.New("Kanidm did not return a UUID for the requested OAuth2 client")
 	}
@@ -470,7 +624,7 @@ func (r *oauth2BasicResource) applyOAuth2BasicState(ctx context.Context, model *
 	return nil
 }
 
-func (r *oauth2BasicResource) applyScopeMaps(ctx context.Context, rsName string, planScopeMaps types.Set) error {
+func (r *oauth2ClientResource) applyScopeMaps(ctx context.Context, rsName string, planScopeMaps types.Set) error {
 	if planScopeMaps.IsNull() || planScopeMaps.IsUnknown() {
 		return nil
 	}
@@ -496,7 +650,7 @@ func (r *oauth2BasicResource) applyScopeMaps(ctx context.Context, rsName string,
 	return nil
 }
 
-func (r *oauth2BasicResource) applySupScopeMaps(ctx context.Context, rsName string, planSupScopeMaps types.Set) error {
+func (r *oauth2ClientResource) applySupScopeMaps(ctx context.Context, rsName string, planSupScopeMaps types.Set) error {
 	if planSupScopeMaps.IsNull() || planSupScopeMaps.IsUnknown() {
 		return nil
 	}
@@ -522,7 +676,7 @@ func (r *oauth2BasicResource) applySupScopeMaps(ctx context.Context, rsName stri
 	return nil
 }
 
-func (r *oauth2BasicResource) applyClaimMaps(ctx context.Context, rsName string, planClaimMaps types.Set) error {
+func (r *oauth2ClientResource) applyClaimMaps(ctx context.Context, rsName string, planClaimMaps types.Set) error {
 	if planClaimMaps.IsNull() || planClaimMaps.IsUnknown() {
 		return nil
 	}
@@ -557,16 +711,22 @@ func (r *oauth2BasicResource) applyClaimMaps(ctx context.Context, rsName string,
 	return nil
 }
 
-func (r *oauth2BasicResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan oauth2BasicResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+func (r *oauth2ClientResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan oauth2ResourceModel
+	resp.Diagnostics.Append(r.getResourceModel(ctx, req.Plan, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	tflog.Debug(ctx, "Creating OAuth2 basic client", map[string]any{"name": plan.Name.ValueString()})
-	oauth2Client, err := r.client.CreateOAuth2BasicClient(ctx, plan.Name.ValueString(), plan.DisplayName.ValueString(), plan.Origin.ValueString())
+	tflog.Debug(ctx, "Creating OAuth2 client", map[string]any{"name": plan.Name.ValueString(), "public": r.public})
+	var oauth2Client *client.OAuth2Client
+	var err error
+	if r.public {
+		oauth2Client, err = r.client.CreateOAuth2PublicClient(ctx, plan.Name.ValueString(), plan.DisplayName.ValueString(), plan.Origin.ValueString())
+	} else {
+		oauth2Client, err = r.client.CreateOAuth2BasicClient(ctx, plan.Name.ValueString(), plan.DisplayName.ValueString(), plan.Origin.ValueString())
+	}
 	if err != nil {
-		resp.Diagnostics.AddError("Error Creating OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Creating "+r.resourceLabel(), err.Error())
 		return
 	}
 	var redirectURIs []string
@@ -607,38 +767,50 @@ func (r *oauth2BasicResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError("Error Reading OAuth2 Client", err.Error())
 		return
 	}
-	plan.ClientSecret = types.StringValue(oauth2Client.ClientSecret)
+	if r.public {
+		plan.ClientSecret = types.StringNull()
+	} else {
+		plan.ClientSecret = types.StringValue(oauth2Client.ClientSecret)
+	}
 	if plan.ImagePath.IsNull() || plan.ImagePath.IsUnknown() || plan.ImagePath.ValueString() == "" {
 		plan.ImageSHA256 = types.StringNull()
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(r.setResourceModel(ctx, &resp.State, &plan)...)
 }
 
-func (r *oauth2BasicResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state oauth2BasicResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+func (r *oauth2ClientResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state oauth2ResourceModel
+	resp.Diagnostics.Append(r.getResourceModel(ctx, req.State, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	tflog.Debug(ctx, "Reading OAuth2 basic client", map[string]any{"id": state.ID.ValueString()})
+	tflog.Debug(ctx, "Reading OAuth2 client", map[string]any{"id": state.ID.ValueString(), "public": r.public})
 	oauth2Client, err := r.client.ResolveOAuth2Client(ctx, firstKnownString(state.ID.ValueString(), state.Name.ValueString()))
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Error Reading OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Reading OAuth2 Client", err.Error())
 		return
 	}
-	if oauth2Client.IsPublic {
-		resp.Diagnostics.AddError("Invalid Client Type", "Expected OAuth2 basic (confidential) client but found public client.")
+	if oauth2Client.IsPublic != r.public {
+		expectedType := "basic (confidential)"
+		actualType := "public"
+		if r.public {
+			expectedType = "public"
+			actualType = "basic (confidential)"
+		}
+		resp.Diagnostics.AddError("Invalid Client Type", fmt.Sprintf("Expected OAuth2 %s client but found %s client.", expectedType, actualType))
 		return
 	}
 	if err := r.applyOAuth2BasicState(ctx, &state, oauth2Client); err != nil {
-		resp.Diagnostics.AddError("Error Reading OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Reading OAuth2 Client", err.Error())
 		return
 	}
-	if state.ClientSecret.IsNull() || state.ClientSecret.ValueString() == "" {
+	if r.public {
+		state.ClientSecret = types.StringNull()
+	} else if state.ClientSecret.IsNull() || state.ClientSecret.ValueString() == "" {
 		secret, err := r.client.GetOAuth2BasicSecret(ctx, oauth2Client.Name)
 		if err != nil {
 			state.ClientSecret = types.StringNull()
@@ -646,7 +818,7 @@ func (r *oauth2BasicResource) Read(ctx context.Context, req resource.ReadRequest
 			state.ClientSecret = types.StringValue(secret)
 		}
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	resp.Diagnostics.Append(r.setResourceModel(ctx, &resp.State, &state)...)
 }
 
 func scopeMapKey(group string, scopes []string) string {
@@ -663,7 +835,7 @@ func claimMapKey(name, group, join string, values []string) string {
 	return name + "::" + group + "::" + join + "::" + strings.Join(sortedValues, ",")
 }
 
-func (r *oauth2BasicResource) diffScopeMaps(ctx context.Context, oldSet, newSet types.Set) (toDelete, toCreate []scopeMapModel, err error) {
+func (r *oauth2ClientResource) diffScopeMaps(ctx context.Context, oldSet, newSet types.Set) (toDelete, toCreate []scopeMapModel, err error) {
 	var oldMaps, newMaps []scopeMapModel
 	if !oldSet.IsNull() && !oldSet.IsUnknown() {
 		diags := oldSet.ElementsAs(ctx, &oldMaps, false)
@@ -716,7 +888,7 @@ func (r *oauth2BasicResource) diffScopeMaps(ctx context.Context, oldSet, newSet 
 	return toDelete, toCreate, nil
 }
 
-func (r *oauth2BasicResource) diffClaimMaps(ctx context.Context, oldSet, newSet types.Set) (toDelete, toCreate []claimMapModel, err error) {
+func (r *oauth2ClientResource) diffClaimMaps(ctx context.Context, oldSet, newSet types.Set) (toDelete, toCreate []claimMapModel, err error) {
 	var oldMaps, newMaps []claimMapModel
 	if !oldSet.IsNull() && !oldSet.IsUnknown() {
 		diags := oldSet.ElementsAs(ctx, &oldMaps, false)
@@ -761,16 +933,26 @@ func (r *oauth2BasicResource) diffClaimMaps(ctx context.Context, oldSet, newSet 
 	return toDelete, toCreate, nil
 }
 
-func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state oauth2BasicResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+func (r *oauth2ClientResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state oauth2ResourceModel
+	resp.Diagnostics.Append(r.getResourceModel(ctx, req.Plan, &plan)...)
+	resp.Diagnostics.Append(r.getResourceModel(ctx, req.State, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	resolvedClient, err := r.client.ResolveOAuth2Client(ctx, firstKnownString(state.ID.ValueString(), state.Name.ValueString()))
 	if err != nil {
-		resp.Diagnostics.AddError("Error Resolving OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Resolving OAuth2 Client", err.Error())
+		return
+	}
+	if resolvedClient.IsPublic != r.public {
+		expectedType := "basic (confidential)"
+		actualType := "public"
+		if r.public {
+			expectedType = "public"
+			actualType = "basic (confidential)"
+		}
+		resp.Diagnostics.AddError("Invalid Client Type", fmt.Sprintf("Expected OAuth2 %s client but found %s client.", expectedType, actualType))
 		return
 	}
 	var redirectURIs []string
@@ -787,7 +969,7 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 		newName = &n
 	}
 	if err := r.client.UpdateOAuth2Client(ctx, resolvedClient.Name, newName, plan.DisplayName.ValueString(), plan.Origin.ValueString(), redirectURIs); err != nil {
-		resp.Diagnostics.AddError("Error Updating OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Updating OAuth2 Client", err.Error())
 		return
 	}
 	effectiveName := resolvedClient.Name
@@ -924,16 +1106,20 @@ func (r *oauth2BasicResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError("Error Reading OAuth2 Client", err.Error())
 		return
 	}
-	plan.ClientSecret = state.ClientSecret
+	if r.public {
+		plan.ClientSecret = types.StringNull()
+	} else {
+		plan.ClientSecret = state.ClientSecret
+	}
 	if plan.ImagePath.IsNull() || plan.ImagePath.IsUnknown() || plan.ImagePath.ValueString() == "" {
 		plan.ImageSHA256 = types.StringNull()
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(r.setResourceModel(ctx, &resp.State, &plan)...)
 }
 
-func (r *oauth2BasicResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state oauth2BasicResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+func (r *oauth2ClientResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state oauth2ResourceModel
+	resp.Diagnostics.Append(r.getResourceModel(ctx, req.State, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -942,20 +1128,26 @@ func (r *oauth2BasicResource) Delete(ctx context.Context, req resource.DeleteReq
 		if errors.Is(err, client.ErrNotFound) {
 			return
 		}
-		resp.Diagnostics.AddError("Error Resolving OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Resolving OAuth2 Client", err.Error())
+		return
+	}
+	if resolvedClient.IsPublic != r.public {
 		return
 	}
 	if err := r.client.DeleteOAuth2Client(ctx, resolvedClient.Name); err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			return
 		}
-		resp.Diagnostics.AddError("Error Deleting OAuth2 Basic Client", err.Error())
+		resp.Diagnostics.AddError("Error Deleting OAuth2 Client", err.Error())
 		return
 	}
 }
 
-func (r *oauth2BasicResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+func (r *oauth2ClientResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if r.public {
+		return
+	}
 	resp.Diagnostics.AddWarning(
 		"Client Secret Not Available",
 		"The client secret for this OAuth2 basic client is not available after import. "+
