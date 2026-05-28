@@ -111,12 +111,7 @@ func (c *Client) DeleteGroup(ctx context.Context, id string) error {
 
 // AddGroupMembers adds members to a group
 func (c *Client) AddGroupMembers(ctx context.Context, groupID string, memberIDs []string) error {
-	// Use the attribute endpoint to add members
-	req := map[string]any{
-		"attrs": memberIDs,
-	}
-
-	resp, err := c.doRequest(ctx, "POST", fmt.Sprintf("/v1/group/%s/_attr/member", groupID), req)
+	resp, err := c.doRequest(ctx, "POST", fmt.Sprintf("/v1/group/%s/_attr/member", groupID), memberIDs)
 	if err != nil {
 		return fmt.Errorf("add group members: %w", err)
 	}
@@ -127,12 +122,7 @@ func (c *Client) AddGroupMembers(ctx context.Context, groupID string, memberIDs 
 
 // RemoveGroupMembers removes members from a group
 func (c *Client) RemoveGroupMembers(ctx context.Context, groupID string, memberIDs []string) error {
-	// Use the attribute endpoint to remove members
-	req := map[string]any{
-		"attrs": memberIDs,
-	}
-
-	resp, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/v1/group/%s/_attr/member", groupID), req)
+	resp, err := c.doRequest(ctx, "DELETE", fmt.Sprintf("/v1/group/%s/_attr/member", groupID), memberIDs)
 	if err != nil {
 		return fmt.Errorf("remove group members: %w", err)
 	}
