@@ -66,3 +66,7 @@ examples/**/*.tfstate.backup
 # Build artifacts
 bin/
 build/
+
+# GPG keys
+*.asc
+*.gpg

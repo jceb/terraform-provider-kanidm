@@ -49,23 +49,27 @@ archives:
       - README.md
 
 checksum:
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
   name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
   algorithm: sha256
 
 signs:
-  - cmd: ssh-keygen
-    artifacts: checksum
+  - artifacts: checksum
     args:
-      - "-Y"
-      - "sign"
-      - "-f"
-      - "{{ .Env.SSH_SIGNING_KEY_FILE }}"
-      - "-n"
-      - "file"
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
       - "${artifact}"
-    signature: "${artifact}.sig"
 
 release:
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
   draft: false
   replace_existing_draft: true
   prerelease: auto
@@ -97,7 +101,7 @@ release:
     
     ## Checksums
     
-    All release artifacts are checksummed and SSH-signed for verification.
+    All release artifacts are checksummed and GPG-signed for verification.
 
 changelog:
   use: github

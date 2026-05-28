@@ -8,8 +8,8 @@ build:
 
 # Install the provider locally for testing
 install: build
-	mkdir -p ~/.terraform.d/plugins/registry.terraform.io/ssoriche/kanidm/0.1.0/darwin_arm64/
-	cp terraform-provider-kanidm ~/.terraform.d/plugins/registry.terraform.io/ssoriche/kanidm/0.1.0/darwin_arm64/
+	mkdir -p ~/.terraform.d/plugins/registry.terraform.io/seanlatimer/kanidm/0.1.0/darwin_arm64/
+	cp terraform-provider-kanidm ~/.terraform.d/plugins/registry.terraform.io/seanlatimer/kanidm/0.1.0/darwin_arm64/
 
 # Run unit tests
 test:
