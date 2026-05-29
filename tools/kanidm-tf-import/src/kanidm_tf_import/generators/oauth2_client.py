@@ -59,18 +59,20 @@ def generate_oauth2_client(
         attrs["redirect_uris"] = [q(u) for u in oauth2.redirect_uris]
 
     scope_map_data = _build_scope_maps(oauth2.scope_maps, resolver)
-    if scope_map_data:
-        attrs["scope_map"] = scope_map_data
-
     sup_scope_map_data = _build_scope_maps(oauth2.sup_scope_maps, resolver)
-    if sup_scope_map_data:
-        attrs["sup_scope_map"] = sup_scope_map_data
-
     claim_map_data = _build_claim_maps(oauth2.claim_maps, resolver)
-    if claim_map_data:
-        attrs["claim_map"] = claim_map_data
 
-    builder.resource(resource_type, tf_name, **attrs)
+    res_block = builder.resource(resource_type, tf_name, **attrs)
+
+    for sm in scope_map_data:
+        res_block.block("scope_map", group=sm["group"], scopes=sm["scopes"])
+
+    for sm in sup_scope_map_data:
+        res_block.block("sup_scope_map", group=sm["group"], scopes=sm["scopes"])
+
+    for cm in claim_map_data:
+        res_block.block("claim_map", name=cm["name"], group=cm["group"], values=cm["values"], join=cm["join"])
+
     return tf_name
 
 
