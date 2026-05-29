@@ -316,11 +316,6 @@ func (r *groupResource) applyGroupState(ctx context.Context, model *groupResourc
 	} else {
 		model.Mail = types.ListNull(types.StringType)
 	}
-	if group.GIDNumber == nil {
-		if unixToken, err := r.client.GetGroupUnixToken(ctx, group.UUID); err == nil {
-			group.GIDNumber = &unixToken.GIDNumber
-		}
-	}
 	if group.GIDNumber != nil {
 		model.PosixEnabled = types.BoolValue(true)
 		model.GIDNumber = types.Int64Value(*group.GIDNumber)
