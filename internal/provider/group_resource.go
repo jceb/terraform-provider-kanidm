@@ -301,7 +301,7 @@ func (r *groupResource) normalizeMemberIdentifiers(ctx context.Context, members 
 
 func (r *groupResource) applyGroupState(ctx context.Context, model *groupResourceModel, group *client.Group) error {
 	if group.UUID == "" {
-		return errors.New("Kanidm did not return a UUID for the requested group")
+		return errors.New("kanidm did not return a UUID for the requested group")
 	}
 
 	model.ID = types.StringValue(group.UUID)
@@ -316,9 +316,18 @@ func (r *groupResource) applyGroupState(ctx context.Context, model *groupResourc
 	} else {
 		model.Mail = types.ListNull(types.StringType)
 	}
-	if group.GIDNumber != nil {
+	if group.PosixEnabled {
 		model.PosixEnabled = types.BoolValue(true)
-		model.GIDNumber = types.Int64Value(*group.GIDNumber)
+		if group.GIDNumber == nil {
+			if unixToken, err := r.client.GetGroupUnixToken(ctx, group.UUID); err == nil {
+				group.GIDNumber = &unixToken.GIDNumber
+			}
+		}
+		if group.GIDNumber != nil {
+			model.GIDNumber = types.Int64Value(*group.GIDNumber)
+		} else {
+			model.GIDNumber = types.Int64Null()
+		}
 	} else {
 		model.PosixEnabled = types.BoolValue(false)
 		model.GIDNumber = types.Int64Null()
@@ -472,6 +481,7 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	if posixEnabled {
 		if unixToken, err := r.client.GetGroupUnixToken(ctx, createdGroup.UUID); err == nil {
+			createdGroup.PosixEnabled = true
 			createdGroup.GIDNumber = &unixToken.GIDNumber
 		}
 	}
@@ -629,17 +639,23 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 	if (posixChanged || gidNumberChanged) && (desiredPosixEnabled || currentPosixEnabled) && !plan.GIDNumber.IsUnknown() {
-		var gid *int64
 		if !plan.GIDNumber.IsNull() {
 			value := plan.GIDNumber.ValueInt64()
-			gid = &value
-		}
-		if err := r.client.SetGroupGIDNumber(ctx, state.ID.ValueString(), gid); err != nil {
-			resp.Diagnostics.AddError(
-				"Error Updating POSIX Group",
-				"Could not update POSIX settings: "+err.Error(),
-			)
-			return
+			if err := r.client.SetGroupGIDNumber(ctx, state.ID.ValueString(), &value); err != nil {
+				resp.Diagnostics.AddError(
+					"Error Updating POSIX Group",
+					"Could not update POSIX settings: "+err.Error(),
+				)
+				return
+			}
+		} else if gidNumberChanged {
+			if err := r.client.DeleteGroupAttr(ctx, state.ID.ValueString(), "gidnumber"); err != nil {
+				resp.Diagnostics.AddError(
+					"Error Removing GID Number",
+					"Could not remove explicit gidnumber: "+err.Error(),
+				)
+				return
+			}
 		}
 	}
 
@@ -654,6 +670,7 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	if desiredPosixEnabled || currentPosixEnabled {
 		if unixToken, err := r.client.GetGroupUnixToken(ctx, updatedGroup.UUID); err == nil {
+			updatedGroup.PosixEnabled = true
 			updatedGroup.GIDNumber = &unixToken.GIDNumber
 		}
 	}

@@ -164,23 +164,6 @@ func stringSetDiff(left, right []string) []string {
 	return diff
 }
 
-func stringSetIntersection(left, right []string) []string {
-	if len(left) == 0 || len(right) == 0 {
-		return []string{}
-	}
-	rightMap := make(map[string]struct{}, len(right))
-	for _, value := range right {
-		rightMap[value] = struct{}{}
-	}
-	intersection := make([]string, 0, len(left))
-	for _, value := range left {
-		if _, exists := rightMap[value]; exists {
-			intersection = append(intersection, value)
-		}
-	}
-	return intersection
-}
-
 func (r *groupMembersResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan groupMembersResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)

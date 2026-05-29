@@ -12,6 +12,7 @@ type Group struct {
 	SPN            string
 	Description    string
 	Mail           []string
+	PosixEnabled   bool
 	GIDNumber      *int64
 	EntryManagedBy []string
 	Members        []string
@@ -70,12 +71,22 @@ func (c *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
 		gidNumber = &parsed
 	}
 
+	classes := entry.GetStringSlice("class")
+	posixEnabled := false
+	for _, c := range classes {
+		if c == "posixgroup" {
+			posixEnabled = true
+			break
+		}
+	}
+
 	return &Group{
 		UUID:           firstNonEmpty(entry.GetString("entryuuid"), entry.GetString("uuid")),
 		Name:           entry.GetString("name"),
 		SPN:            entry.GetString("spn"),
 		Description:    entry.GetString("description"),
 		Mail:           entry.GetStringSlice("mail"),
+		PosixEnabled:   posixEnabled,
 		GIDNumber:      gidNumber,
 		EntryManagedBy: entry.GetStringSlice("entry_managed_by"),
 		Members:        members,

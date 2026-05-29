@@ -331,7 +331,7 @@ func (r *serviceAccountResource) ModifyPlan(ctx context.Context, req resource.Mo
 
 func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, model *serviceAccountResourceModel, sa *client.ServiceAccount) error {
 	if sa.UUID == "" {
-		return errors.New("Kanidm did not return a UUID for the requested service account")
+		return errors.New("kanidm did not return a UUID for the requested service account")
 	}
 
 	model.ID = types.StringValue(sa.UUID)

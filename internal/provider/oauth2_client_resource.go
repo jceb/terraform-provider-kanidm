@@ -111,22 +111,7 @@ type stateSetter interface {
 }
 
 func resourceModelFromBasic(model oauth2BasicResourceModel) oauth2ResourceModel {
-	return oauth2ResourceModel{
-		ID:                       model.ID,
-		Name:                     model.Name,
-		DisplayName:              model.DisplayName,
-		Origin:                   model.Origin,
-		RedirectURIs:             model.RedirectURIs,
-		ImagePath:                model.ImagePath,
-		ImageSHA256:              model.ImageSHA256,
-		ScopeMaps:                model.ScopeMaps,
-		SupScopeMaps:             model.SupScopeMaps,
-		ClaimMaps:                model.ClaimMaps,
-		PreferShortUsername:      model.PreferShortUsername,
-		AllowInsecureDisablePKCE: model.AllowInsecureDisablePKCE,
-		JWTLegacyCryptoEnable:    model.JWTLegacyCryptoEnable,
-		ClientSecret:             model.ClientSecret,
-	}
+	return oauth2ResourceModel(model)
 }
 
 func resourceModelFromPublic(model oauth2PublicResourceModel) oauth2ResourceModel {
@@ -149,22 +134,7 @@ func resourceModelFromPublic(model oauth2PublicResourceModel) oauth2ResourceMode
 }
 
 func basicModelFromResource(model oauth2ResourceModel) oauth2BasicResourceModel {
-	return oauth2BasicResourceModel{
-		ID:                       model.ID,
-		Name:                     model.Name,
-		DisplayName:              model.DisplayName,
-		Origin:                   model.Origin,
-		RedirectURIs:             model.RedirectURIs,
-		ImagePath:                model.ImagePath,
-		ImageSHA256:              model.ImageSHA256,
-		ScopeMaps:                model.ScopeMaps,
-		SupScopeMaps:             model.SupScopeMaps,
-		ClaimMaps:                model.ClaimMaps,
-		PreferShortUsername:      model.PreferShortUsername,
-		AllowInsecureDisablePKCE: model.AllowInsecureDisablePKCE,
-		JWTLegacyCryptoEnable:    model.JWTLegacyCryptoEnable,
-		ClientSecret:             model.ClientSecret,
-	}
+	return oauth2BasicResourceModel(model)
 }
 
 func publicModelFromResource(model oauth2ResourceModel) oauth2PublicResourceModel {
@@ -545,7 +515,7 @@ func (r *oauth2ClientResource) resolveGroupUUID(ctx context.Context, identifier 
 
 func (r *oauth2ClientResource) applyOAuth2BasicState(ctx context.Context, model *oauth2ResourceModel, oauth2Client *client.OAuth2Client) error {
 	if oauth2Client.UUID == "" {
-		return errors.New("Kanidm did not return a UUID for the requested OAuth2 client")
+		return errors.New("kanidm did not return a UUID for the requested OAuth2 client")
 	}
 	model.ID = types.StringValue(oauth2Client.UUID)
 	model.Name = types.StringValue(oauth2Client.Name)
