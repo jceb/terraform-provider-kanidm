@@ -150,6 +150,10 @@ The user can then visit the Kanidm web UI with the token to set up passkeys or p
 			"valid_from": schema.StringAttribute{
 				MarkdownDescription: "Earliest RFC3339 time when the person can authenticate. Use `null` to leave unset.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"expire_at": schema.StringAttribute{
 				MarkdownDescription: "RFC3339 time when the person account expires. Use `null` to leave unset.",

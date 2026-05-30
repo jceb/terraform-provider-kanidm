@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -101,6 +102,9 @@ resource "kanidm_group" "developers" {
 				MarkdownDescription: "Optional POSIX gidnumber for the group. Computed after POSIX is enabled, even when Kanidm generates the value.",
 				Optional:            true,
 				Computed:            true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"entry_managed_by": schema.SetAttribute{
 				MarkdownDescription: "Set of account or group IDs that can manage this group.",
