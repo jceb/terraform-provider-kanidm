@@ -26,8 +26,10 @@ type ServiceAccount struct {
 	ExpireAt       string
 }
 
-// CreateServiceAccount creates a new service account
-func (c *Client) CreateServiceAccount(ctx context.Context, name, displayName string, entryManagedBy []string) (*ServiceAccount, error) {
+// CreateServiceAccount creates a new service account. If generateToken is true, an API token
+// is automatically generated. Set generateToken to false if the calling user lacks permission
+// to generate tokens (e.g. not the entry_managed_by entity).
+func (c *Client) CreateServiceAccount(ctx context.Context, name, displayName string, entryManagedBy []string, generateToken bool) (*ServiceAccount, error) {
 	attrs := map[string]any{
 		"name": []string{name},
 	}
@@ -54,13 +56,13 @@ func (c *Client) CreateServiceAccount(ctx context.Context, name, displayName str
 		EntryManagedBy: entryManagedBy,
 	}
 
-	// Generate initial API token
-	token, err := c.GenerateServiceAccountToken(ctx, name, "terraform-managed", nil)
-	if err != nil {
-		return nil, fmt.Errorf("generate initial token: %w", err)
+	if generateToken {
+		token, err := c.GenerateServiceAccountToken(ctx, name, "terraform-managed", nil)
+		if err != nil {
+			return nil, fmt.Errorf("generate initial token: %w", err)
+		}
+		sa.APIToken = token
 	}
-
-	sa.APIToken = token
 
 	return sa, nil
 }
@@ -86,7 +88,6 @@ func (c *Client) GetServiceAccount(ctx context.Context, id string) (*ServiceAcco
 		Mail:           entry.GetStringSlice("mail"),
 		ValidFrom:      entry.GetString(serviceAccountAttrValidFrom),
 		ExpireAt:       entry.GetString(serviceAccountAttrExpireAt),
-		// Note: API tokens are not returned in GET responses
 	}, nil
 }
 

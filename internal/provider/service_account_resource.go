@@ -18,9 +18,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*serviceAccountResource)(nil)
-	_ resource.ResourceWithImportState = (*serviceAccountResource)(nil)
-	_ resource.ResourceWithModifyPlan  = (*serviceAccountResource)(nil)
+	_ resource.Resource                   = (*serviceAccountResource)(nil)
+	_ resource.ResourceWithImportState    = (*serviceAccountResource)(nil)
+	_ resource.ResourceWithModifyPlan    = (*serviceAccountResource)(nil)
+	_ resource.ResourceWithUpgradeState  = (*serviceAccountResource)(nil)
 )
 
 func NewServiceAccountResource() resource.Resource {
@@ -32,17 +33,18 @@ type serviceAccountResource struct {
 }
 
 type serviceAccountResourceModel struct {
-	Name           types.String `tfsdk:"name"`
-	ID             types.String `tfsdk:"id"`
-	DisplayName    types.String `tfsdk:"displayname"`
-	Mail           types.List   `tfsdk:"mail"`
-	PosixEnabled   types.Bool   `tfsdk:"posix_enabled"`
-	GIDNumber      types.Int64  `tfsdk:"gidnumber"`
-	Shell          types.String `tfsdk:"shell"`
-	APIToken       types.String `tfsdk:"api_token"`
-	EntryManagedBy types.Set    `tfsdk:"entry_managed_by"`
-	ValidFrom      types.String `tfsdk:"valid_from"`
-	ExpireAt       types.String `tfsdk:"expire_at"`
+	Name             types.String `tfsdk:"name"`
+	ID               types.String `tfsdk:"id"`
+	DisplayName      types.String `tfsdk:"displayname"`
+	Mail             types.List   `tfsdk:"mail"`
+	PosixEnabled     types.Bool   `tfsdk:"posix_enabled"`
+	GIDNumber        types.Int64  `tfsdk:"gidnumber"`
+	Shell            types.String `tfsdk:"shell"`
+	GenerateAPIToken types.Bool   `tfsdk:"generate_api_token"`
+	APIToken         types.String `tfsdk:"api_token"`
+EntryManagedBy types.String `tfsdk:"entry_managed_by"`
+	ValidFrom        types.String `tfsdk:"valid_from"`
+	ExpireAt         types.String `tfsdk:"expire_at"`
 }
 
 func (r *serviceAccountResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -54,7 +56,7 @@ func (r *serviceAccountResource) Schema(_ context.Context, _ resource.SchemaRequ
 		MarkdownDescription: `Manages a Kanidm service account.
 
 Service accounts are used for automated systems and applications to authenticate with Kanidm.
-An API token is automatically generated on creation and can be used for authentication.
+By default, an API token is automatically generated on creation and can be used for authentication.
 
 ## Example Usage
 
@@ -72,7 +74,11 @@ output "terraform_token" {
 ` + "```" + `
 
 **Important:** The API token is only available during creation and cannot be recovered later.
-Store it securely immediately after creation.`,
+Store it securely immediately after creation.
+
+Set ` + "`generate_api_token = false`" + ` to skip token generation. This is useful when the
+API user lacks permission to generate tokens (in Kanidm, only the ` + "`entry_managed_by`" + `
+entity can generate API tokens for a service account).`,
 
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
@@ -97,9 +103,9 @@ Store it securely immediately after creation.`,
 			},
 			"posix_enabled": schema.BoolAttribute{
 				MarkdownDescription: "Whether POSIX support is enabled for the service account. Enabling without a gidnumber lets Kanidm generate one automatically. Disabling after enablement is not currently supported.",
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
 			},
 			"gidnumber": schema.Int64Attribute{
 				MarkdownDescription: "Optional POSIX gidnumber for the service account. Computed after POSIX is enabled, even when Kanidm generates the value.",
@@ -114,6 +120,14 @@ Store it securely immediately after creation.`,
 				Optional:            true,
 				Computed:            true,
 			},
+			"generate_api_token": schema.BoolAttribute{
+				MarkdownDescription: "Whether to generate an API token on creation. Set to `false` if the API user " +
+					"lacks permission to generate tokens. In Kanidm, only the `entry_managed_by` entity can generate " +
+					"API tokens for a service account. Defaults to `true`.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
+			},
 			"api_token": schema.StringAttribute{
 				MarkdownDescription: "API token for the service account. **Only available during creation.** " +
 					"Store this token securely as it cannot be retrieved later.",
@@ -123,12 +137,11 @@ Store it securely immediately after creation.`,
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"entry_managed_by": schema.SetAttribute{
-				MarkdownDescription: "Set of account or group IDs that can manage this service account. " +
+			"entry_managed_by": schema.StringAttribute{
+				MarkdownDescription: "Account or group ID that can manage this service account. " +
 					"This allows delegated administration, including API token generation. " +
-					"**Required by Kanidm.** Use fully-qualified names (e.g., `terraform-admin@idm.s8i.ca`).",
-				Required:    true,
-				ElementType: types.StringType,
+					"**Required by Kanidm.** Use a fully-qualified name (e.g., `terraform-admin@idm.s8i.ca`) or UUID.",
+				Required: true,
 			},
 			"valid_from": schema.StringAttribute{
 				MarkdownDescription: "Earliest RFC3339 time when the service account can authenticate. Use `null` to leave unset.",
@@ -139,6 +152,7 @@ Store it securely immediately after creation.`,
 				Optional:            true,
 			},
 		},
+		Version: 1,
 	}
 }
 
@@ -309,24 +323,6 @@ func (r *serviceAccountResource) ModifyPlan(ctx context.Context, req resource.Mo
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("shell"), types.StringNull())...)
 		}
 	}
-	if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
-		var managers []string
-		resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &managers, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		normalized, err := r.normalizeEntryManagedBy(ctx, managers)
-		if err != nil {
-			resp.Diagnostics.AddError("Error Normalizing entry_managed_by", err.Error())
-			return
-		}
-		managedBySet, diags := types.SetValueFrom(ctx, types.StringType, normalized)
-		if diags.HasError() {
-			resp.Diagnostics.Append(diags...)
-			return
-		}
-		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("entry_managed_by"), managedBySet)...)
-	}
 }
 
 func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, model *serviceAccountResourceModel, sa *client.ServiceAccount) error {
@@ -335,8 +331,16 @@ func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, m
 	}
 
 	model.ID = types.StringValue(sa.UUID)
-	model.Name = types.StringValue(sa.Name)
-	model.DisplayName = types.StringValue(sa.DisplayName)
+	if sa.Name != "" {
+		model.Name = types.StringValue(sa.Name)
+	} else if model.Name.IsNull() || model.Name.IsUnknown() {
+		model.Name = types.StringValue(sa.Name)
+	}
+	if sa.DisplayName != "" {
+		model.DisplayName = types.StringValue(sa.DisplayName)
+	} else if model.DisplayName.IsNull() || model.DisplayName.IsUnknown() {
+		model.DisplayName = types.StringValue(sa.DisplayName)
+	}
 	if len(sa.Mail) > 0 {
 		mailList, diags := types.ListValueFrom(ctx, types.StringType, sa.Mail)
 		if diags.HasError() {
@@ -362,18 +366,10 @@ func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, m
 		return err
 	}
 
-	normalizedManagers, err := r.normalizeEntryManagedBy(ctx, sa.EntryManagedBy)
-	if err != nil {
-		return err
-	}
-	if len(normalizedManagers) > 0 {
-		embySet, diags := types.SetValueFrom(ctx, types.StringType, normalizedManagers)
-		if diags.HasError() {
-			return errors.New(diags.Errors()[0].Summary())
-		}
-		model.EntryManagedBy = embySet
+	if len(sa.EntryManagedBy) > 0 {
+		model.EntryManagedBy = types.StringValue(sa.EntryManagedBy[0])
 	} else {
-		model.EntryManagedBy = types.SetNull(types.StringType)
+		model.EntryManagedBy = types.StringNull()
 	}
 	if sa.ValidFrom != "" {
 		model.ValidFrom = types.StringValue(sa.ValidFrom)
@@ -417,9 +413,8 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 	var entryManagedBy []string
 	var mail []string
 	var err error
-	resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &entryManagedBy, false)...)
-	if resp.Diagnostics.HasError() {
-		return
+	if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
+		entryManagedBy = []string{plan.EntryManagedBy.ValueString()}
 	}
 	if !plan.Mail.IsNull() && !plan.Mail.IsUnknown() {
 		resp.Diagnostics.Append(plan.Mail.ElementsAs(ctx, &mail, false)...)
@@ -427,14 +422,16 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 			return
 		}
 	}
-	entryManagedBy, err = r.resolveEntryManagedBySPNs(ctx, entryManagedBy)
+	spn, err := r.resolveManagerSPN(ctx, plan.EntryManagedBy.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Error Resolving entry_managed_by", err.Error())
 		return
 	}
+	entryManagedBy = []string{spn}
 
-	// Create the service account (this also generates an initial API token)
-	sa, err := r.client.CreateServiceAccount(ctx, plan.Name.ValueString(), plan.DisplayName.ValueString(), entryManagedBy)
+	// Create the service account (optionally generating an API token)
+	generateToken := !plan.GenerateAPIToken.IsNull() && !plan.GenerateAPIToken.IsUnknown() && plan.GenerateAPIToken.ValueBool()
+	sa, err := r.client.CreateServiceAccount(ctx, plan.Name.ValueString(), plan.DisplayName.ValueString(), entryManagedBy, generateToken)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Creating Service Account",
@@ -443,7 +440,11 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	plan.APIToken = types.StringValue(sa.APIToken)
+	if generateToken {
+		plan.APIToken = types.StringValue(sa.APIToken)
+	} else {
+		plan.APIToken = types.StringNull()
+	}
 	if !plan.ValidFrom.IsNull() && !plan.ValidFrom.IsUnknown() {
 		if err := r.client.SetServiceAccountValidFrom(ctx, sa.Name, plan.ValidFrom.ValueString()); err != nil {
 			resp.Diagnostics.AddError("Error Updating Valid From", "Service account was created but valid_from could not be set: "+err.Error())
@@ -568,23 +569,31 @@ func (r *serviceAccountResource) Update(ctx context.Context, req resource.Update
 	}
 	posixChanged := !plan.PosixEnabled.Equal(state.PosixEnabled) || !plan.GIDNumber.Equal(state.GIDNumber) || !plan.Shell.Equal(state.Shell)
 
-	// Check if entry_managed_by has changed
+	// Check if entry_managed_by has changed - resolve both sides to UUIDs for comparison
 	var entryManagedBy []string
 	entryManagedByChanged := !plan.EntryManagedBy.Equal(state.EntryManagedBy)
+	if entryManagedByChanged {
+		planUUID, err := r.resolveManagerUUID(ctx, plan.EntryManagedBy.ValueString())
+		if err != nil {
+			planUUID = plan.EntryManagedBy.ValueString()
+		}
+		stateUUID, err := r.resolveManagerUUID(ctx, state.EntryManagedBy.ValueString())
+		if err != nil {
+			stateUUID = state.EntryManagedBy.ValueString()
+		}
+		entryManagedByChanged = planUUID != stateUUID
+	}
 	mailChanged := !plan.Mail.Equal(state.Mail)
 	if entryManagedByChanged {
 		if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
-			resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &entryManagedBy, false)...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			entryManagedBy, err = r.resolveEntryManagedBySPNs(ctx, entryManagedBy)
+			spn, err := r.resolveManagerSPN(ctx, plan.EntryManagedBy.ValueString())
 			if err != nil {
 				resp.Diagnostics.AddError("Error Resolving entry_managed_by", err.Error())
 				return
 			}
+			entryManagedBy = []string{spn}
 		} else {
-			entryManagedBy = []string{} // Explicitly clear if set to null
+			entryManagedBy = []string{}
 		}
 
 		tflog.Debug(ctx, "EntryManagedBy changed, updating service account", map[string]any{
@@ -761,17 +770,87 @@ func (r *serviceAccountResource) Delete(ctx context.Context, req resource.Delete
 }
 
 func (r *serviceAccountResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Use the ID directly as the import identifier
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 
 	tflog.Debug(ctx, "Imported service account", map[string]any{
 		"id": req.ID,
 	})
 
-	// Add a warning about the API token
 	resp.Diagnostics.AddWarning(
 		"API Token Not Available",
 		"The API token for this service account is not available after import. "+
 			"If you need the token, you must regenerate it manually using the Kanidm CLI or web interface.",
 	)
+}
+
+func (r *serviceAccountResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: &schema.Schema{
+				Attributes: map[string]schema.Attribute{
+					"name":               schema.StringAttribute{Required: true},
+					"id":                 schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+					"displayname":        schema.StringAttribute{Required: true},
+					"mail":               schema.ListAttribute{Optional: true, ElementType: types.StringType},
+					"posix_enabled":      schema.BoolAttribute{Optional: true, Computed: true},
+					"gidnumber":          schema.Int64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
+					"shell":              schema.StringAttribute{Optional: true, Computed: true},
+					"generate_api_token": schema.BoolAttribute{Optional: true, Computed: true},
+					"api_token":          schema.StringAttribute{Computed: true, Sensitive: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+					"entry_managed_by":   schema.SetAttribute{Required: true, ElementType: types.StringType},
+					"valid_from":         schema.StringAttribute{Optional: true},
+					"expire_at":          schema.StringAttribute{Optional: true},
+				},
+			},
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var priorState struct {
+					Name             types.String `tfsdk:"name"`
+					ID               types.String `tfsdk:"id"`
+					DisplayName      types.String `tfsdk:"displayname"`
+					Mail             types.List   `tfsdk:"mail"`
+					PosixEnabled     types.Bool   `tfsdk:"posix_enabled"`
+					GIDNumber        types.Int64  `tfsdk:"gidnumber"`
+					Shell            types.String `tfsdk:"shell"`
+					GenerateAPIToken types.Bool   `tfsdk:"generate_api_token"`
+					APIToken         types.String `tfsdk:"api_token"`
+					EntryManagedBy   types.Set    `tfsdk:"entry_managed_by"`
+					ValidFrom        types.String `tfsdk:"valid_from"`
+					ExpireAt         types.String `tfsdk:"expire_at"`
+				}
+
+				resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				var embyValues []string
+				resp.Diagnostics.Append(priorState.EntryManagedBy.ElementsAs(ctx, &embyValues, false)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				embyString := types.StringNull()
+				if len(embyValues) > 0 {
+					embyString = types.StringValue(embyValues[0])
+				}
+
+				upgradedState := serviceAccountResourceModel{
+					Name:             priorState.Name,
+					ID:               priorState.ID,
+					DisplayName:      priorState.DisplayName,
+					Mail:             priorState.Mail,
+					PosixEnabled:     priorState.PosixEnabled,
+					GIDNumber:        priorState.GIDNumber,
+					Shell:            priorState.Shell,
+					GenerateAPIToken: priorState.GenerateAPIToken,
+					APIToken:         priorState.APIToken,
+					EntryManagedBy:   embyString,
+					ValidFrom:        priorState.ValidFrom,
+					ExpireAt:         priorState.ExpireAt,
+				}
+
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgradedState)...)
+			},
+		},
+	}
 }

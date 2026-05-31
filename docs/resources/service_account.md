@@ -5,7 +5,8 @@ subcategory: "Identity"
 description: |-
   Manages a Kanidm service account.
   Service accounts are used for automated systems and applications to authenticate with Kanidm.
-  An API token is automatically generated on creation and can be used for authentication.
+  By default, an API token is automatically generated on creation and can be used for authentication.
+  Set `generate_api_token = false` to skip token generation if the API user lacks permission.
   Example Usage
   
   resource "kanidm_service_account" "terraform" {
@@ -18,6 +19,13 @@ description: |-
     value     = kanidm_service_account.terraform.api_token
     sensitive = true
   }
+
+  # Skip token generation when the API user lacks permission
+  resource "kanidm_service_account" "mail-sender" {
+    name               = "kanidm-mail-sender"
+    displayname        = "Kanidm Mail Sender"
+    generate_api_token = false
+  }
   
   Important: The API token is only available during creation and cannot be recovered later.
   Store it securely immediately after creation.
@@ -28,7 +36,7 @@ description: |-
 Manages a Kanidm service account.
 
 Service accounts are used for automated systems and applications to authenticate with Kanidm.
-An API token is automatically generated on creation and can be used for authentication.
+By default, an API token is automatically generated on creation and can be used for authentication.
 
 ## Example Usage
 
@@ -42,6 +50,19 @@ resource "kanidm_service_account" "terraform" {
 output "terraform_token" {
   value     = kanidm_service_account.terraform.api_token
   sensitive = true
+}
+```
+
+## Skipping Token Generation
+
+In Kanidm's RBAC model, only the `entry_managed_by` entity can generate API tokens for a
+service account. If your API user lacks this permission, set `generate_api_token = false`:
+
+```hcl
+resource "kanidm_service_account" "mail-sender" {
+  name               = "kanidm-mail-sender"
+  displayname        = "Kanidm Mail Sender"
+  generate_api_token = false
 }
 ```
 
@@ -90,12 +111,13 @@ resource "kanidm_service_account" "existing" {
 ### Required
 
 - `displayname` (String) Display name for the service account. This is shown in the Kanidm UI and logs.
-- `entry_managed_by` (Set of String) Set of account or group IDs that can manage this service account. This allows delegated administration, including API token generation. **Required by Kanidm.** Use fully-qualified names (e.g., `terraform-admin@idm.s8i.ca`).
+- `entry_managed_by` (String) Account or group ID that can manage this service account. This allows delegated administration, including API token generation. **Required by Kanidm.** Use a fully-qualified name (e.g., `terraform-admin@idm.s8i.ca`) or UUID.
 - `name` (String) Service account name. This can be changed outside Terraform, but is tracked via the stable UUID in `id`.
 
 ### Optional
 
 - `expire_at` (String) RFC3339 time when the service account expires. Use `null` to leave unset.
+- `generate_api_token` (Boolean) Whether to generate an API token on creation. Set to `false` if the API user lacks permission to generate tokens. In Kanidm, only the `entry_managed_by` entity can generate API tokens for a service account. Defaults to `true`.
 - `gidnumber` (Number) Optional POSIX gidnumber for the service account. Computed after POSIX is enabled, even when Kanidm generates the value.
 - `mail` (List of String) Email addresses for the service account.
 - `posix_enabled` (Boolean) Whether POSIX support is enabled for the service account. Enabling without a gidnumber lets Kanidm generate one automatically. Disabling after enablement is not currently supported.
@@ -104,5 +126,5 @@ resource "kanidm_service_account" "existing" {
 
 ### Read-Only
 
-- `api_token` (String, Sensitive) API token for the service account. **Only available during creation.** Store this token securely as it cannot be retrieved later.
+- `api_token` (String, Sensitive) API token for the service account. Only populated when `generate_api_token` is `true`. **Only available during creation.** Store this token securely as it cannot be retrieved later.
 - `id` (String) Stable Kanidm UUID for this service account. This value is computed after creation/import and used to keep the resource linked across external renames.
