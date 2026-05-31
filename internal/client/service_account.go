@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 )
 
@@ -69,7 +70,7 @@ func (c *Client) CreateServiceAccount(ctx context.Context, name, displayName str
 
 // GetServiceAccount retrieves a service account by ID
 func (c *Client) GetServiceAccount(ctx context.Context, id string) (*ServiceAccount, error) {
-	resp, err := c.doRequest(ctx, "GET", "/v1/service_account/"+id, nil)
+	resp, err := c.doRequest(ctx, "GET", "/v1/service_account/"+url.PathEscape(id), nil)
 	if err != nil {
 		return nil, fmt.Errorf("get service account: %w", err)
 	}

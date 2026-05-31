@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/url"
 )
 
 const (
@@ -47,7 +48,7 @@ func (c *Client) CreatePerson(ctx context.Context, name, displayName string) (*P
 
 // GetPerson retrieves a person account by ID
 func (c *Client) GetPerson(ctx context.Context, id string) (*Person, error) {
-	resp, err := c.doRequest(ctx, "GET", "/v1/person/"+id, nil)
+	resp, err := c.doRequest(ctx, "GET", "/v1/person/"+url.PathEscape(id), nil)
 	if err != nil {
 		return nil, fmt.Errorf("get person: %w", err)
 	}

@@ -367,7 +367,20 @@ func (r *serviceAccountResource) applyServiceAccountState(ctx context.Context, m
 	}
 
 	if len(sa.EntryManagedBy) > 0 {
-		model.EntryManagedBy = types.StringValue(sa.EntryManagedBy[0])
+		apiEmbyUUID, err := r.resolveManagerUUID(ctx, sa.EntryManagedBy[0])
+		if err != nil || apiEmbyUUID == "" {
+			apiEmbyUUID = sa.EntryManagedBy[0]
+		}
+		if !model.EntryManagedBy.IsNull() && !model.EntryManagedBy.IsUnknown() {
+			modelEmbyUUID, err := r.resolveManagerUUID(ctx, model.EntryManagedBy.ValueString())
+			if err == nil && modelEmbyUUID == apiEmbyUUID {
+				// keep model's format
+			} else {
+				model.EntryManagedBy = types.StringValue(apiEmbyUUID)
+			}
+		} else {
+			model.EntryManagedBy = types.StringValue(apiEmbyUUID)
+		}
 	} else {
 		model.EntryManagedBy = types.StringNull()
 	}

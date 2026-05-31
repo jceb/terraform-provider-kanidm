@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/url"
 )
 
 // Group represents a Kanidm group
@@ -51,7 +52,7 @@ func (c *Client) CreateGroup(ctx context.Context, name, description string) (*Gr
 
 // GetGroup retrieves a group by ID
 func (c *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
-	resp, err := c.doRequest(ctx, "GET", "/v1/group/"+id, nil)
+	resp, err := c.doRequest(ctx, "GET", "/v1/group/"+url.PathEscape(id), nil)
 	if err != nil {
 		return nil, fmt.Errorf("get group: %w", err)
 	}

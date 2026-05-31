@@ -22,6 +22,7 @@ var (
 	_ resource.Resource                = (*groupResource)(nil)
 	_ resource.ResourceWithImportState = (*groupResource)(nil)
 	_ resource.ResourceWithModifyPlan  = (*groupResource)(nil)
+	_ resource.ResourceWithUpgradeState = (*groupResource)(nil)
 )
 
 func NewGroupResource() resource.Resource {
@@ -39,7 +40,7 @@ type groupResourceModel struct {
 	Mail           types.List   `tfsdk:"mail"`
 	PosixEnabled   types.Bool   `tfsdk:"posix_enabled"`
 	GIDNumber      types.Int64  `tfsdk:"gidnumber"`
-	EntryManagedBy types.Set    `tfsdk:"entry_managed_by"`
+	EntryManagedBy types.String `tfsdk:"entry_managed_by"`
 	Members        types.Set    `tfsdk:"members"`
 }
 
@@ -106,15 +107,16 @@ resource "kanidm_group" "developers" {
 					int64planmodifier.UseStateForUnknown(),
 				},
 			},
-			"entry_managed_by": schema.SetAttribute{
-				MarkdownDescription: "Set of account or group IDs that can manage this group.",
+			"entry_managed_by": schema.StringAttribute{
+				MarkdownDescription: "Account or group ID that can manage this group. Use UUIDs or fully-qualified names.",
 				Optional:            true,
-				ElementType:         types.StringType,
 			},
-			"members": schema.SetAttribute{
+"members": schema.SetAttribute{
 				MarkdownDescription: "Set of member IDs (persons, service accounts, or groups). " +
-					"Members are managed as a complete set - any changes will replace all members.",
+					"Members are managed as a complete set - any changes will replace all members. " +
+					"Use UUIDs or fully-qualified names (e.g., `user@domain.com`).",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 		},
@@ -234,11 +236,6 @@ func (r *groupResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	if req.Plan.Raw.IsNull() {
 		return
 	}
-	var plan groupResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 }
 
 func (r *groupResource) normalizeMemberIdentifiers(ctx context.Context, members []string) ([]string, error) {
@@ -347,21 +344,78 @@ func (r *groupResource) applyGroupState(ctx context.Context, model *groupResourc
 		model.GIDNumber = types.Int64Null()
 	}
 	if len(group.EntryManagedBy) > 0 {
-		embySet, diags := types.SetValueFrom(ctx, types.StringType, group.EntryManagedBy)
-		if diags.HasError() {
-			return fmt.Errorf("convert entry_managed_by set: %s", diags.Errors()[0].Summary())
+		apiEmbyUUID, err := r.resolveManagerUUID(ctx, group.EntryManagedBy[0])
+		if err != nil || apiEmbyUUID == "" {
+			apiEmbyUUID = group.EntryManagedBy[0]
 		}
-		model.EntryManagedBy = embySet
+		if !model.EntryManagedBy.IsNull() && !model.EntryManagedBy.IsUnknown() {
+			modelEmbyUUID, err := r.resolveManagerUUID(ctx, model.EntryManagedBy.ValueString())
+			if err == nil && modelEmbyUUID == apiEmbyUUID {
+				// keep model's format
+			} else {
+				model.EntryManagedBy = types.StringValue(apiEmbyUUID)
+			}
+		} else {
+			model.EntryManagedBy = types.StringValue(apiEmbyUUID)
+		}
 	} else {
-		model.EntryManagedBy = types.SetNull(types.StringType)
+		model.EntryManagedBy = types.StringNull()
 	}
 
 	if len(group.Members) > 0 {
-		membersSet, diags := types.SetValueFrom(ctx, types.StringType, group.Members)
-		if diags.HasError() {
-			return fmt.Errorf("convert members set: %s", diags.Errors()[0].Summary())
+		apiUUIDs, err := r.normalizeMemberIdentifiers(ctx, group.Members)
+		if err != nil {
+			return fmt.Errorf("resolve members to UUIDs: %w", err)
 		}
-		model.Members = membersSet
+		apiMemberMap := make(map[string]string, len(apiUUIDs))
+		for i, spn := range group.Members {
+			apiMemberMap[apiUUIDs[i]] = spn
+		}
+		if !model.Members.IsNull() && !model.Members.IsUnknown() {
+			var existingMembers []string
+			respDiags := model.Members.ElementsAs(ctx, &existingMembers, false)
+			if respDiags.HasError() {
+				return fmt.Errorf("extract existing members: %s", respDiags.Errors()[0].Summary())
+			}
+			existingUUIDs, err := r.normalizeMemberIdentifiers(ctx, existingMembers)
+			if err == nil {
+				modelUUIDToValue := make(map[string]string, len(existingMembers))
+				for i, v := range existingMembers {
+					if i < len(existingUUIDs) {
+						modelUUIDToValue[existingUUIDs[i]] = v
+					}
+				}
+				finalMembers := make([]string, len(apiUUIDs))
+				for i, uuid := range apiUUIDs {
+					if preserved, ok := modelUUIDToValue[uuid]; ok {
+						finalMembers[i] = preserved
+					} else {
+						finalMembers[i] = uuid
+					}
+				}
+				membersSet, diags := types.SetValueFrom(ctx, types.StringType, finalMembers)
+				if diags.HasError() {
+					return fmt.Errorf("convert members set: %s", diags.Errors()[0].Summary())
+				}
+				model.Members = membersSet
+			} else {
+				membersSet, diags := types.SetValueFrom(ctx, types.StringType, apiMemberMap)
+				if diags.HasError() {
+					return fmt.Errorf("convert members set: %s", diags.Errors()[0].Summary())
+				}
+				model.Members = membersSet
+			}
+		} else {
+			finalMembers := make([]string, len(apiUUIDs))
+			for i, uuid := range apiUUIDs {
+				finalMembers[i] = uuid
+			}
+			membersSet, diags := types.SetValueFrom(ctx, types.StringType, finalMembers)
+			if diags.HasError() {
+				return fmt.Errorf("convert members set: %s", diags.Errors()[0].Summary())
+			}
+			model.Members = membersSet
+		}
 	} else {
 		model.Members = types.SetNull(types.StringType)
 	}
@@ -394,15 +448,13 @@ func (r *groupResource) Create(ctx context.Context, req resource.CreateRequest, 
 		description = plan.Description.ValueString()
 	}
 	if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
-		resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &entryManagedBy, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		entryManagedBy, err = r.resolveEntryManagedBySPNs(ctx, entryManagedBy)
+		entryManagedByStr := plan.EntryManagedBy.ValueString()
+		embySPN, err := r.resolveManagerSPN(ctx, entryManagedByStr)
 		if err != nil {
 			resp.Diagnostics.AddError("Error Resolving entry_managed_by", err.Error())
 			return
 		}
+		entryManagedBy = []string{embySPN}
 	}
 	if !plan.Mail.IsNull() && !plan.Mail.IsUnknown() {
 		resp.Diagnostics.Append(plan.Mail.ElementsAs(ctx, &mail, false)...)
@@ -582,15 +634,12 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		}
 	}
 	if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
-		resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &entryManagedBy, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		entryManagedBy, err = r.resolveEntryManagedBySPNs(ctx, entryManagedBy)
+		embySPN, err := r.resolveManagerSPN(ctx, plan.EntryManagedBy.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError("Error Resolving entry_managed_by", err.Error())
 			return
 		}
+		entryManagedBy = []string{embySPN}
 	}
 	if !plan.Mail.IsNull() && !plan.Mail.IsUnknown() {
 		resp.Diagnostics.Append(plan.Mail.ElementsAs(ctx, &mail, false)...)
@@ -607,37 +656,26 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 
 	// Compare entry_managed_by by resolving both sides to UUIDs
 	entryManagedByChanged := false
-	var planEmby, stateEmby []string
+	var planEmbyUUID, stateEmbyUUID string
 	if !plan.EntryManagedBy.IsNull() && !plan.EntryManagedBy.IsUnknown() {
-		resp.Diagnostics.Append(plan.EntryManagedBy.ElementsAs(ctx, &planEmby, false)...)
+		planEmbyUUID, _ = r.resolveManagerUUID(ctx, plan.EntryManagedBy.ValueString())
+		if planEmbyUUID == "" {
+			planEmbyUUID = plan.EntryManagedBy.ValueString()
+		}
 	}
 	if !state.EntryManagedBy.IsNull() && !state.EntryManagedBy.IsUnknown() {
-		resp.Diagnostics.Append(state.EntryManagedBy.ElementsAs(ctx, &stateEmby, false)...)
+		stateEmbyUUID, _ = r.resolveManagerUUID(ctx, state.EntryManagedBy.ValueString())
+		if stateEmbyUUID == "" {
+			stateEmbyUUID = state.EntryManagedBy.ValueString()
+		}
 	}
-	if resp.Diagnostics.HasError() {
-		return
+	if plan.EntryManagedBy.IsNull() && state.EntryManagedBy.IsNull() {
+		entryManagedByChanged = false
+	} else if plan.EntryManagedBy.IsNull() != state.EntryManagedBy.IsNull() {
+		entryManagedByChanged = true
+	} else {
+		entryManagedByChanged = planEmbyUUID != stateEmbyUUID
 	}
-	planEmbyUUIDs, err := r.normalizeEntryManagedBy(ctx, planEmby)
-	if err != nil {
-		resp.Diagnostics.AddError("Error Resolving plan entry_managed_by", err.Error())
-		return
-	}
-	stateEmbyUUIDs, err := r.normalizeEntryManagedBy(ctx, stateEmby)
-	if err != nil {
-		resp.Diagnostics.AddError("Error Resolving state entry_managed_by", err.Error())
-		return
-	}
-	planEmbySet, diags := types.SetValueFrom(ctx, types.StringType, planEmbyUUIDs)
-	if diags.HasError() {
-		resp.Diagnostics.Append(diags...)
-		return
-	}
-	stateEmbySet, diags := types.SetValueFrom(ctx, types.StringType, stateEmbyUUIDs)
-	if diags.HasError() {
-		resp.Diagnostics.Append(diags...)
-		return
-	}
-	entryManagedByChanged = !planEmbySet.Equal(stateEmbySet)
 
 	// Compare members by resolving both sides to UUIDs
 	membersChanged := false
@@ -721,7 +759,13 @@ func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	} else {
 		membersToApply = nil
 	}
-	if err := r.client.UpdateGroup(ctx, state.ID.ValueString(), name, description, mailToApply, managedBy, membersToApply); err != nil {
+	if name == nil && description == nil && mailToApply == nil && managedBy == nil && membersToApply == nil && !posixChanged && !gidNumberChanged {
+		tflog.Debug(ctx, "No changes to apply, skipping update", map[string]any{
+			"id": state.ID.ValueString(),
+		})
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
+	} else if err := r.client.UpdateGroup(ctx, state.ID.ValueString(), name, description, mailToApply, managedBy, membersToApply); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Group",
 			"Could not update group: "+err.Error(),
@@ -813,10 +857,69 @@ func (r *groupResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 }
 
 func (r *groupResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Use the ID (group name) directly as the import identifier
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 
 	tflog.Debug(ctx, "Imported group", map[string]any{
 		"id": req.ID,
 	})
+}
+
+func (r *groupResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: &schema.Schema{
+				Attributes: map[string]schema.Attribute{
+					"name":              schema.StringAttribute{Required: true},
+					"id":                schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+					"description":       schema.StringAttribute{Optional: true},
+					"mail":              schema.ListAttribute{Optional: true, Computed: true, ElementType: types.StringType},
+					"posix_enabled":     schema.BoolAttribute{Optional: true, Computed: true},
+					"gidnumber":         schema.Int64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
+					"entry_managed_by":  schema.SetAttribute{Optional: true, Computed: true, ElementType: types.StringType},
+					"members":           schema.SetAttribute{Optional: true, Computed: true, ElementType: types.StringType},
+				},
+			},
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var priorState struct {
+					Name           types.String `tfsdk:"name"`
+					ID             types.String `tfsdk:"id"`
+					Description    types.String `tfsdk:"description"`
+					Mail           types.List   `tfsdk:"mail"`
+					PosixEnabled   types.Bool   `tfsdk:"posix_enabled"`
+					GIDNumber      types.Int64  `tfsdk:"gidnumber"`
+					EntryManagedBy types.Set    `tfsdk:"entry_managed_by"`
+					Members        types.Set    `tfsdk:"members"`
+				}
+
+				resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				var embyValues []string
+				resp.Diagnostics.Append(priorState.EntryManagedBy.ElementsAs(ctx, &embyValues, false)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				embyString := types.StringNull()
+				if len(embyValues) > 0 {
+					embyString = types.StringValue(embyValues[0])
+				}
+
+				upgradedState := groupResourceModel{
+					Name:           priorState.Name,
+					ID:             priorState.ID,
+					Description:    priorState.Description,
+					Mail:           priorState.Mail,
+					PosixEnabled:   priorState.PosixEnabled,
+					GIDNumber:      priorState.GIDNumber,
+					EntryManagedBy: embyString,
+					Members:        priorState.Members,
+				}
+
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgradedState)...)
+			},
+		},
+	}
 }
